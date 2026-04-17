@@ -1,0 +1,425 @@
+// backend/routes/sales.routes.js
+import express from "express";
+import { pool } from "../config/db.js";
+import { verifyToken } from "../middlewares/auth.js";
+import z from "zod";
+
+const router = express.Router();
+
+// ✅ Esquema de validación con Zod
+const saleSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: z.string().uuid("ID de producto debe ser UUID válido"),
+        quantity: z.coerce
+          .number()
+          .int()
+          .positive("Cantidad debe ser mayor a 0")
+          .max(9999),
+      }),
+    )
+    .min(1, "El carrito debe tener al menos un producto"),
+  paymentMethod: z.enum(["cash", "card", "transfer"]).default("cash"),
+});
+
+// ============================================================================
+// ✅ POST /: Procesar Venta
+// ============================================================================
+router.post("/", verifyToken, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const validated = saleSchema.parse(req.body);
+    const { items, paymentMethod } = validated;
+
+    // ✅ ID consistente desde middleware (ya normalizado a string UUID)
+    const userId = req.user.id;
+
+    await client.query("BEGIN");
+
+    let total = 0;
+    const saleItemsData = [];
+
+    for (const item of items) {
+      const productRes = await client.query(
+        "SELECT id, sale_price, stock, name FROM products WHERE id = $1::uuid AND is_active = true FOR UPDATE",
+        [item.productId],
+      );
+
+      if (productRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          success: false,
+          message: `Producto no encontrado: ${item.productId}`,
+        });
+      }
+
+      const product = productRes.rows[0];
+      const stock = parseInt(product.stock);
+      const price = parseFloat(product.sale_price);
+
+      if (stock < item.quantity) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: `Stock insuficiente para "${product.name}". Disponible: ${stock}`,
+        });
+      }
+
+      await client.query(
+        "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2::uuid",
+        [item.quantity, item.productId],
+      );
+
+      saleItemsData.push({
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPrice: price,
+        subtotal: item.quantity * price,
+      });
+
+      total += item.quantity * price;
+    }
+
+    const columnsCheck = await client.query(`
+      SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'sales' AND column_name IN ('total_amount', 'total')
+    `);
+    const totalColumn = columnsCheck.rows[0]?.column_name || "total_amount";
+
+    // ✅ CORREGIDO: Agregar user_id al RETURNING
+    const saleRes = await client.query(
+      `INSERT INTO sales (user_id, payment_method, ${totalColumn}, status, created_at) 
+       VALUES ($1::uuid, $2, $3, 'completed', NOW()) 
+       RETURNING id, user_id, created_at`,
+      [userId, paymentMethod, total],
+    );
+
+    const saleId = saleRes.rows[0].id;
+
+    for (const itemData of saleItemsData) {
+      await client.query(
+        `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) 
+         VALUES ($1, $2::uuid, $3, $4, $5)`,
+        [
+          saleId,
+          itemData.productId,
+          itemData.quantity,
+          itemData.unitPrice,
+          itemData.subtotal,
+        ],
+      );
+    }
+
+    // ✅ Registrar movimiento de stock (si la tabla existe)
+    try {
+      for (const item of items) {
+        await client.query(
+          `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id) 
+           VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)`,
+          [
+            item.productId,
+            -item.quantity,
+            "sale",
+            "Venta en POS",
+            userId,
+            saleId,
+          ],
+        );
+      }
+    } catch (stockErr) {
+      // Si no existe la tabla stock_movements, ignorar error
+      console.log("⚠️ Tabla stock_movements no existe, omitiendo registro");
+    }
+
+    await client.query("COMMIT");
+
+    // ✅ CORREGIDO: La respuesta JSON estaba mal formada (falta data:)
+    return res.status(201).json({
+      success: true,
+      message: "Venta procesada exitosamente",
+      data: {
+        saleId,
+        total,
+        createdAt: saleRes.rows[0].created_at,
+        paymentMethod,
+        itemsCount: items.length,
+      },
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("❌ Error en venta:", err);
+
+    if (err.name === "ZodError") {
+      const msgs = err.errors
+        .map((e) => `${e.path.join(".")}: ${e.message}`)
+        .join("; ");
+      return res
+        .status(400)
+        .json({ success: false, message: `Validación: ${msgs}` });
+    }
+    if (
+      err.message?.includes("Stock insuficiente") ||
+      err.message?.includes("Producto no encontrado")
+    ) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+    return res
+      .status(500)
+      .json({ success: false, message: "Error interno al procesar la venta" });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================================================================
+// ✅ GET /: Historial de Ventas (Filtrado por Rol)
+// ============================================================================
+router.get("/", verifyToken, async (req, res) => {
+  try {
+    const { start, end, page = 1, limit = 20 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const conditions = [];
+    const values = [];
+
+    // 🔒 Cajera solo ve SUS ventas
+    if (req.user.role === "cashier") {
+      conditions.push(`s.user_id = $${values.length + 1}::uuid`);
+      values.push(req.user.id);
+    }
+
+    if (start) {
+      conditions.push(`s.created_at >= $${values.length + 1}`);
+      values.push(new Date(start));
+    }
+    if (end) {
+      conditions.push(`s.created_at <= $${values.length + 1}`);
+      values.push(new Date(end + "T23:59:59"));
+    }
+
+    const columnsCheck = await pool.query(`
+      SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'sales' AND column_name IN ('total_amount', 'total')
+    `);
+    const totalColumn = columnsCheck.rows[0]?.column_name || "total_amount";
+
+    let sql = `
+      SELECT 
+        s.id, 
+        s.${totalColumn} as total, 
+        s.payment_method, 
+        s.status, 
+        s.created_at,
+        s.user_id,
+        u.name AS cashier_name, 
+        u.email AS cashier_email,
+        COUNT(si.id) as items_count
+      FROM sales s
+      LEFT JOIN users u ON s.user_id = u.id
+      LEFT JOIN sale_items si ON s.id = si.sale_id
+    `;
+    if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
+
+    sql += ` GROUP BY s.id, s.${totalColumn}, s.payment_method, s.status, s.created_at, s.user_id, u.name, u.email ORDER BY s.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
+    values.push(parseInt(limit), offset);
+
+    const result = await pool.query(sql, values);
+
+    let countSql = "SELECT COUNT(DISTINCT s.id) FROM sales s";
+    if (conditions.length > 0) countSql += ` WHERE ${conditions.join(" AND ")}`;
+    const countResult = await pool.query(countSql, values.slice(0, -2));
+    const totalRecords = parseInt(countResult.rows[0].count);
+
+    // ✅ CORREGIDO: Agregar data:
+    return res.json({
+      success: true,
+      data: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalRecords,
+        totalPages: Math.ceil(totalRecords / parseInt(limit)) || 1,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Error GET /sales:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error al cargar historial" });
+  }
+});
+
+// ============================================================================
+// 📦 GET /stock-movements: Historial de Stock
+// ============================================================================
+router.get("/stock-movements", verifyToken, async (req, res) => {
+  try {
+    // Solo warehouse y admin pueden acceder
+    if (!["warehouse", "admin"].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+
+    const { start, end, page = 1, limit = 20, productId } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const conditions = [];
+    const values = [];
+
+    if (req.user.role === "warehouse") {
+      conditions.push(`sm.created_by = $${values.length + 1}::uuid`);
+      values.push(req.user.id);
+    }
+
+    if (productId) {
+      conditions.push(`sm.product_id = $${values.length + 1}::uuid`);
+      values.push(productId);
+    }
+    if (start) {
+      conditions.push(`sm.created_at >= $${values.length + 1}`);
+      values.push(new Date(start));
+    }
+    if (end) {
+      conditions.push(`sm.created_at <= $${values.length + 1}`);
+      values.push(new Date(end + "T23:59:59"));
+    }
+
+    let sql = `
+      SELECT 
+        sm.id, sm.product_id, sm.quantity, sm.movement_type, sm.reason,
+        sm.created_at, sm.created_by,
+        p.name AS product_name, p.sku,
+        u.name AS user_name
+      FROM stock_movements sm
+      JOIN products p ON sm.product_id = p.id
+      LEFT JOIN users u ON sm.created_by = u.id
+    `;
+    if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
+    sql += ` ORDER BY sm.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
+    values.push(parseInt(limit), offset);
+
+    const result = await pool.query(sql, values);
+
+    let countSql = "SELECT COUNT(*) FROM stock_movements sm";
+    if (conditions.length > 0) countSql += ` WHERE ${conditions.join(" AND ")}`;
+    const countResult = await pool.query(countSql, values.slice(0, -2));
+    const totalRecords = parseInt(countResult.rows[0].count);
+
+    // ✅ CORREGIDO: Agregar data:
+    return res.json({
+      success: true,
+      data: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalRecords,
+        totalPages: Math.ceil(totalRecords / parseInt(limit)) || 1,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Error GET /stock-movements:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Error al cargar movimientos de stock",
+    });
+  }
+});
+
+// ============================================================================
+// 📦 POST /stock-movements: Registrar Movimiento Manual
+// ============================================================================
+router.post("/stock-movements", verifyToken, async (req, res) => {
+  try {
+    if (!["warehouse", "admin"].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+
+    const {
+      productId,
+      quantity,
+      reason,
+      movementType = "adjustment",
+    } = req.body;
+    const qty = parseInt(quantity);
+
+    if (!productId || !qty) {
+      return res.status(400).json({
+        success: false,
+        message: "Producto y cantidad son requeridos",
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const productRes = await client.query(
+        "SELECT id, name, stock FROM products WHERE id = $1::uuid AND is_active = true",
+        [productId],
+      );
+      if (productRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          success: false,
+          message: "Producto no encontrado o inactivo",
+        });
+      }
+      const product = productRes.rows[0];
+
+      const newStock = parseInt(product.stock) + qty;
+      await client.query(
+        "UPDATE products SET stock = $1, updated_at = NOW() WHERE id = $2::uuid",
+        [newStock, productId],
+      );
+
+      const movementRes = await client.query(
+        `INSERT INTO stock_movements (
+           product_id, quantity, movement_type, reason, created_by
+         ) VALUES ($1::uuid, $2, $3, $4, $5::uuid)
+         RETURNING id, created_at`,
+        [
+          productId,
+          qty,
+          movementType,
+          reason || `${movementType} manual`,
+          req.user.id,
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      // ✅ CORREGIDO: Agregar data:
+      return res.status(201).json({
+        success: true,
+        message: `Stock actualizado: ${qty > 0 ? "+" : ""}${qty} unidades`,
+        data: {
+          movementId: movementRes.rows[0].id,
+          productName: product.name,
+          previousStock: parseInt(product.stock),
+          newStock,
+          createdAt: movementRes.rows[0].created_at,
+          createdBy: req.user.id,
+        },
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("❌ Error POST /stock-movements:", err);
+    if (err.message === "Producto no encontrado o inactivo") {
+      return res.status(404).json({ success: false, message: err.message });
+    }
+    return res.status(500).json({
+      success: false,
+      message: "Error al registrar movimiento de stock",
+    });
+  }
+});
+
+export default router;

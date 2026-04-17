@@ -1,0 +1,203 @@
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { pool } from "../config/db.js";
+import { verifyToken } from "../middlewares/auth.js";
+// ✅ Importaciones para 2FA
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
+
+const router = express.Router();
+
+// ✅ LOGIN (Sintaxis corregida)
+router.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res
+        .status(400)
+        .json({ success: false, message: "Email y contraseña requeridos" });
+
+    const result = await pool.query(
+      `SELECT id, name, email, role, password_hash, is_active, two_factor_secret, two_factor_enabled 
+       FROM users WHERE email = $1`,
+      [email],
+    );
+
+    if (result.rows.length === 0)
+      return res
+        .status(401)
+        .json({ success: false, message: "Credenciales inválidas" });
+    const user = result.rows[0];
+
+    if (!user.is_active)
+      return res
+        .status(401)
+        .json({ success: false, message: "Usuario inactivo" });
+
+    const validPass = await bcrypt.compare(password, user.password_hash);
+    if (!validPass)
+      return res
+        .status(401)
+        .json({ success: false, message: "Credenciales inválidas" });
+
+    const accessToken = jwt.sign(
+      { userId: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET || "dev-secret-key",
+      { expiresIn: "8h" },
+    );
+
+    res.json({
+      success: true,
+      message: "Login exitoso",
+      data: {
+        accessToken,
+        requires2FA: user.two_factor_enabled === true, // Flag para frontend
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Error en servidor" });
+  }
+});
+
+// ✅ ME (Validar token)
+router.get("/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "Token no proporcionado" });
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || "dev-secret-key",
+    );
+    const result = await pool.query(
+      "SELECT id, name, email, role, is_active FROM users WHERE id = $1",
+      [decoded.userId],
+    );
+    if (result.rows.length === 0)
+      return res
+        .status(404)
+        .json({ success: false, message: "Usuario no encontrado" });
+
+    res.json({
+      success: true,
+      data: { user: result.rows[0], tokenValid: true },
+    });
+  } catch (err) {
+    res
+      .status(401)
+      .json({ success: false, message: "Token inválido o expirado" });
+  }
+});
+
+// ============================================================================
+// 🔐 RUTAS 2FA (NUEVAS)
+// ============================================================================
+
+// 1. Generar QR y Secreto
+router.get("/2fa/setup", verifyToken, async (req, res) => {
+  try {
+    const secret = speakeasy.generateSecret({
+      name: "POS Sistema",
+      length: 32,
+    });
+    const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url);
+    res.json({
+      success: true,
+      data: { qrCodeUrl, secret: secret.base32 },
+    });
+  } catch (err) {
+    console.error("❌ Error setup 2FA:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error al generar configuración 2FA" });
+  }
+});
+
+// 2. Verificar y Activar
+router.post("/2fa/verify", verifyToken, async (req, res) => {
+  try {
+    const { token, secret } = req.body;
+    if (!token || !secret)
+      return res
+        .status(400)
+        .json({ success: false, message: "Token y secreto requeridos" });
+
+    const verified = speakeasy.totp.verify({
+      secret,
+      encoding: "base32",
+      token,
+      window: 1,
+    });
+    if (!verified)
+      return res
+        .status(400)
+        .json({ success: false, message: "Código inválido o expirado" });
+
+    const userId = req.user?.id || req.user?.userId;
+    await pool.query(
+      "UPDATE users SET two_factor_secret = $1, two_factor_enabled = true WHERE id = $2::uuid",
+      [secret, userId],
+    );
+
+    res.json({ success: true, message: "✅ 2FA activado correctamente" });
+  } catch (err) {
+    console.error("❌ Error verify 2FA:", err);
+    res.status(500).json({ success: false, message: "Error al activar 2FA" });
+  }
+});
+
+// 3. Desactivar
+router.post("/2fa/disable", verifyToken, async (req, res) => {
+  try {
+    const { token } = req.body;
+    const userId = req.user?.id || req.user?.userId;
+
+    // Verificar token actual
+    const user = await pool.query(
+      "SELECT two_factor_secret FROM users WHERE id = $1::uuid",
+      [userId],
+    );
+    const secret = user.rows[0]?.two_factor_secret;
+    if (!secret)
+      return res
+        .status(400)
+        .json({ success: false, message: "2FA no configurado" });
+
+    const verified = speakeasy.totp.verify({
+      secret,
+      encoding: "base32",
+      token,
+      window: 1,
+    });
+    if (!verified)
+      return res
+        .status(400)
+        .json({ success: false, message: "Código inválido" });
+
+    await pool.query(
+      "UPDATE users SET two_factor_secret = NULL, two_factor_enabled = false WHERE id = $1::uuid",
+      [userId],
+    );
+    res.json({ success: true, message: "2FA desactivado correctamente" });
+  } catch (err) {
+    console.error("❌ Error disable 2FA:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error al desactivar 2FA" });
+  }
+});
+
+export default router;
