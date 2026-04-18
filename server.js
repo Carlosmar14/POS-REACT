@@ -111,6 +111,7 @@ const importRoute = async (routePath, routeName) => {
 // ============================================================================
 (async () => {
   try {
+    // ✅ Cargar todas las rutas
     const [
       authRoutes,
       productRoutes,
@@ -120,6 +121,7 @@ const importRoute = async (routePath, routeName) => {
       reportRoutes,
       logRoutes,
       configuracionRoutes,
+      licenseRoutes, // ✅ NUEVO: Ruta de licencia
     ] = await Promise.all([
       importRoute("./src/routes/auth.routes.js", "auth"),
       importRoute("./src/routes/products.routes.js", "products"),
@@ -129,12 +131,26 @@ const importRoute = async (routePath, routeName) => {
       importRoute("./src/routes/reports.routes.js", "reports"),
       importRoute("./src/routes/logs.routes.js", "logs"),
       importRoute("./src/routes/configuracion.routes.js", "configuracion"),
+      importRoute("./src/routes/license.routes.js", "license"), // ✅ NUEVO
     ]);
+
+    // ✅ Cargar middleware de licencia
+    const { requireLicense } =
+      await import("./src/middlewares/licenseMiddleware.js");
+    console.log("✅ Middleware de licencia cargado");
 
     // ============================================================================
     // 🗂️ REGISTRO DE RUTAS
     // ============================================================================
+
+    // ✅ Rutas PÚBLICAS (no requieren licencia)
     app.use("/api/auth", authRoutes);
+    app.use("/api/license", licenseRoutes); // ✅ NUEVO: Ruta de activación
+
+    // ✅ Middleware de licencia - Protege TODAS las rutas siguientes
+    app.use("/api", requireLicense);
+
+    // ✅ Rutas PROTEGIDAS (requieren licencia válida)
     app.use("/api/configuracion", configuracionRoutes);
     app.use("/api/products", productRoutes);
     app.use("/api/categories", categoryRoutes);
@@ -143,16 +159,26 @@ const importRoute = async (routePath, routeName) => {
     app.use("/api/reports", reportRoutes);
     app.use("/api/logs", logRoutes);
 
+    // ============================================================================
+    // 🧪 RUTA DE PRUEBA
+    // ============================================================================
     app.get("/api/test", (req, res) => {
       res.json({
         success: true,
         message: "Backend funcionando correctamente",
         timestamp: new Date().toISOString(),
+        license: req.license || null,
         routes: {
-          auth: "/api/auth/login",
-          configuracion: "/api/configuracion",
-          products: "/api/products",
-          sales: "/api/sales",
+          public: {
+            auth: "/api/auth/login",
+            license: "/api/license/status",
+            activate: "/api/license/activate",
+          },
+          protected: {
+            configuracion: "/api/configuracion",
+            products: "/api/products",
+            sales: "/api/sales",
+          },
         },
       });
     });
@@ -166,15 +192,22 @@ const importRoute = async (routePath, routeName) => {
         success: false,
         message: `Ruta no encontrada: ${req.method} ${req.originalUrl}`,
         availableRoutes: [
+          // Públicas
           "/api/auth/login",
           "/api/auth/me",
           "/api/auth/2fa/setup",
           "/api/auth/2fa/verify",
+          "/api/license/status",
+          "/api/license/activate",
+          // Protegidas
           "/api/configuracion",
           "/api/configuracion/reset",
           "/api/products",
           "/api/sales",
           "/api/sales/stats",
+          "/api/users",
+          "/api/reports",
+          "/api/logs",
           "/api/test",
           "/api/health",
         ],
@@ -188,12 +221,10 @@ const importRoute = async (routePath, routeName) => {
       console.error("❌ Error global:", err.name, err.message);
 
       if (err instanceof multer.MulterError) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: `Error de archivo: ${err.message}`,
-          });
+        return res.status(400).json({
+          success: false,
+          message: `Error de archivo: ${err.message}`,
+        });
       }
 
       if (err.name === "ZodError") {
@@ -226,13 +257,33 @@ const importRoute = async (routePath, routeName) => {
     // ============================================================================
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`\n✅ POS Backend corriendo en http://localhost:${PORT}`);
-      console.log(`📁 Uploads: http://localhost:${PORT}/uploads/`);
       console.log(
-        `🔧 Configuración: http://localhost:${PORT}/api/configuracion`,
+        `\n╔══════════════════════════════════════════════════════════════╗`,
       );
-      console.log(`🔐 2FA: http://localhost:${PORT}/api/auth/2fa/setup`);
-      console.log(`🏥 Health: http://localhost:${PORT}/api/health\n`);
+      console.log(
+        `║           ✅ POS Backend corriendo en http://localhost:${PORT}           ║`,
+      );
+      console.log(
+        `╠══════════════════════════════════════════════════════════════╣`,
+      );
+      console.log(
+        `║   📁 Uploads:      http://localhost:${PORT}/uploads/          ║`,
+      );
+      console.log(
+        `║   🔧 Configuración: http://localhost:${PORT}/api/configuracion ║`,
+      );
+      console.log(
+        `║   🔐 2FA:          http://localhost:${PORT}/api/auth/2fa/setup║`,
+      );
+      console.log(
+        `║   🔑 Licencia:     http://localhost:${PORT}/api/license/status║`,
+      );
+      console.log(
+        `║   🏥 Health:       http://localhost:${PORT}/api/health        ║`,
+      );
+      console.log(
+        `╚══════════════════════════════════════════════════════════════╝\n`,
+      );
     });
   } catch (err) {
     console.error("❌ ERROR FATAL al iniciar servidor:", err);

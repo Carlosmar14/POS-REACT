@@ -1,0 +1,213 @@
+// frontend/src/pages/Activacion.jsx
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import api from "../api";
+import Swal from "sweetalert2";
+import {
+  Key,
+  Shield,
+  Loader2,
+  Store,
+  CheckCircle,
+  XCircle,
+} from "lucide-react";
+
+export default function Activacion() {
+  const navigate = useNavigate();
+  const [licenseToken, setLicenseToken] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [licenseStatus, setLicenseStatus] = useState(null);
+
+  useEffect(() => {
+    checkLicenseStatus();
+  }, []);
+
+  const checkLicenseStatus = async () => {
+    try {
+      const res = await api.get("/license/status");
+      console.log("📦 Estado de licencia:", res.data);
+      setLicenseStatus(res.data.data);
+      if (res.data.data.valid) {
+        setTimeout(() => navigate("/login"), 2000);
+      }
+    } catch (err) {
+      console.error("Error verificando licencia:", err);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleActivate = async (e) => {
+    e.preventDefault();
+
+    if (!licenseToken.trim()) {
+      return Swal.fire("Error", "Ingresa el token de licencia", "warning");
+    }
+
+    setLoading(true);
+    console.log("📤 Enviando token:", licenseToken.substring(0, 30) + "...");
+
+    try {
+      const res = await api.post("/license/activate", {
+        licenseToken: licenseToken.trim(),
+        customerName: customerName.trim() || null,
+      });
+
+      console.log("✅ Respuesta:", res.data);
+
+      if (res.data.success) {
+        await Swal.fire({
+          title: "✅ ¡Licencia Activada!",
+          html: `
+            <div style="text-align: left;">
+              <p><strong>Cliente:</strong> ${res.data.data.customerName}</p>
+              <p><strong>Válida desde:</strong> ${res.data.data.startDate}</p>
+              <p><strong>Válida hasta:</strong> ${res.data.data.endDate}</p>
+              <p><strong>Días restantes:</strong> ${res.data.data.daysLeft}</p>
+            </div>
+          `,
+          icon: "success",
+        });
+
+        navigate("/login");
+      }
+    } catch (err) {
+      console.error("❌ Error:", err.response?.data);
+      Swal.fire(
+        "Error",
+        err.response?.data?.message || "Token inválido",
+        "error",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
+        <Loader2 className="animate-spin text-blue-600" size={48} />
+      </div>
+    );
+  }
+
+  if (licenseStatus?.valid) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+          <div className="w-16 h-16 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+            <CheckCircle
+              className="text-green-600 dark:text-green-400"
+              size={32}
+            />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">
+            ¡Licencia Activa!
+          </h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-2">
+            {licenseStatus.data.customerName}
+          </p>
+          <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 mb-4">
+            <p className="text-sm">Vence: {licenseStatus.data.endDate}</p>
+            <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-2">
+              {licenseStatus.data.daysLeft} días restantes
+            </p>
+          </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            Redirigiendo al login...
+          </p>
+          <Loader2 className="animate-spin text-blue-600 mx-auto" size={24} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full">
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-2xl mb-4">
+            <Store className="text-blue-600 dark:text-blue-400" size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Activar Licencia
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
+            Ingresa el token proporcionado por el proveedor
+          </p>
+        </div>
+
+        {licenseStatus &&
+          !licenseStatus.valid &&
+          licenseStatus.reason !== "no_license" && (
+            <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg">
+              <p className="text-sm text-red-700 dark:text-red-400 flex items-center gap-2">
+                <XCircle size={16} />
+                {licenseStatus.message || "Licencia inválida"}
+              </p>
+            </div>
+          )}
+
+        <form onSubmit={handleActivate} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Nombre del Cliente/Empresa (opcional)
+            </label>
+            <input
+              type="text"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Ej: Café Universal"
+              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Token de Licencia
+            </label>
+            <div className="relative">
+              <Key
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+                size={20}
+              />
+              <input
+                type="text"
+                value={licenseToken}
+                onChange={(e) => setLicenseToken(e.target.value)}
+                placeholder="Pega el token completo aquí"
+                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                autoFocus
+                disabled={loading}
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !licenseToken.trim()}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="animate-spin" size={18} /> Activando...
+              </>
+            ) : (
+              <>
+                <Shield size={18} /> Activar Licencia
+              </>
+            )}
+          </button>
+        </form>
+
+        <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+          <p className="text-xs text-center text-gray-500 dark:text-gray-400">
+            ¿No tienes licencia? Contacta a soporte.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

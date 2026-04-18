@@ -24,6 +24,7 @@ import {
   X,
   Upload,
   Trash2,
+  Calendar,
 } from "lucide-react";
 
 // ✅ Función para aplicar el tema
@@ -417,6 +418,164 @@ export default function Configuracion() {
     setVerificationCode(value);
   };
 
+  // ✅ Componente LicenciaInfo
+  const LicenciaInfo = () => {
+    const [license, setLicense] = useState(null);
+    const [loadingLicense, setLoadingLicense] = useState(true);
+
+    useEffect(() => {
+      loadLicenseInfo();
+    }, []);
+
+    const loadLicenseInfo = async () => {
+      try {
+        const res = await api.get("/license/status");
+        if (res.data.success) {
+          setLicense(res.data.data);
+        }
+      } catch (err) {
+        console.error("Error cargando licencia:", err);
+      } finally {
+        setLoadingLicense(false);
+      }
+    };
+
+    if (loadingLicense) {
+      return (
+        <div className="flex items-center justify-center py-4">
+          <Loader2 className="animate-spin text-blue-600" size={20} />
+          <span className="ml-2 text-gray-500">Cargando licencia...</span>
+        </div>
+      );
+    }
+
+    if (!license?.valid) {
+      return (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle className="text-red-600" size={18} />
+            <span className="font-medium text-red-700 dark:text-red-400">
+              No hay licencia activa
+            </span>
+          </div>
+          <p className="text-sm text-red-600 dark:text-red-300">
+            {license?.message || "El sistema no tiene una licencia válida."}
+          </p>
+        </div>
+      );
+    }
+
+    const licenseData = license.data;
+    const daysLeft = licenseData.daysLeft || 0;
+    const totalDays =
+      licenseData.totalDays ||
+      Math.ceil(
+        (new Date(licenseData.endDate) - new Date(licenseData.startDate)) /
+          (1000 * 60 * 60 * 24),
+      );
+    const progressPercent = Math.min(
+      100,
+      Math.max(0, ((totalDays - daysLeft) / totalDays) * 100),
+    );
+
+    let progressColor = "bg-green-500";
+    let statusColor = "text-green-600 dark:text-green-400";
+    let statusText = "Activa";
+
+    if (daysLeft <= 7) {
+      progressColor = "bg-red-500";
+      statusColor = "text-red-600 dark:text-red-400";
+      statusText = "Por expirar";
+    } else if (daysLeft <= 30) {
+      progressColor = "bg-yellow-500";
+      statusColor = "text-yellow-600 dark:text-yellow-400";
+      statusText = "Próxima a vencer";
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Cliente</p>
+            <p className="font-semibold text-gray-900 dark:text-white">
+              {licenseData.customerName}
+            </p>
+          </div>
+          <div
+            className={`px-3 py-1 rounded-full text-sm font-medium ${statusColor} bg-opacity-10 bg-current`}
+          >
+            {statusText}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Fecha de inicio
+            </p>
+            <p className="font-medium text-gray-900 dark:text-white">
+              {new Date(licenseData.startDate).toLocaleDateString("es-ES")}
+            </p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Fecha de vencimiento
+            </p>
+            <p className="font-medium text-gray-900 dark:text-white">
+              {new Date(licenseData.endDate).toLocaleDateString("es-ES")}
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex justify-between text-sm mb-1">
+            <span className="text-gray-500 dark:text-gray-400">
+              Días restantes:{" "}
+              <strong className="text-gray-900 dark:text-white">
+                {daysLeft}
+              </strong>{" "}
+              de {totalDays}
+            </span>
+            <span className="text-gray-500 dark:text-gray-400">
+              {Math.round(progressPercent)}% usado
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+            <div
+              className={`${progressColor} h-2.5 rounded-full transition-all duration-500`}
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        </div>
+
+        {daysLeft <= 30 && (
+          <div
+            className={`p-3 rounded-lg flex items-start gap-2 ${daysLeft <= 7 ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800" : "bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"}`}
+          >
+            <AlertTriangle
+              className={daysLeft <= 7 ? "text-red-600" : "text-yellow-600"}
+              size={18}
+            />
+            <div>
+              <p
+                className={`text-sm font-medium ${daysLeft <= 7 ? "text-red-700 dark:text-red-400" : "text-yellow-700 dark:text-yellow-400"}`}
+              >
+                {daysLeft <= 7
+                  ? "¡Licencia por expirar!"
+                  : "Licencia próxima a vencer"}
+              </p>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                {daysLeft <= 7
+                  ? `Tu licencia expira en ${daysLeft} días. Contacta a soporte para renovarla.`
+                  : `Tu licencia expirará en ${daysLeft} días. Renueva antes de que venza.`}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ✅ Componente Switch reutilizable
   const Switch = ({ checked, onChange }) => (
     <button
@@ -736,7 +895,7 @@ export default function Configuracion() {
         {/* ==================== FACTURA / TICKET ==================== */}
         {activeTab === "invoice" && (
           <div className="p-6 space-y-4">
-            {/* ✅ SECCIÓN LOGO - SIMPLE (SOLO INPUT DE ARCHIVO) */}
+            {/* ✅ SECCIÓN LOGO */}
             <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
               <p className="font-medium text-gray-900 dark:text-white mb-3 flex items-center gap-2">
                 <Upload size={18} className="text-blue-600" />
@@ -744,7 +903,6 @@ export default function Configuracion() {
               </p>
 
               <div className="flex items-start gap-4">
-                {/* Previsualización del logo */}
                 <div className="flex-shrink-0">
                   {settings.invoice.logo ? (
                     <div className="relative">
@@ -773,7 +931,6 @@ export default function Configuracion() {
                   )}
                 </div>
 
-                {/* Input de archivo */}
                 <div className="flex-1">
                   <label className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg cursor-pointer transition">
                     <Upload size={16} />
@@ -1372,6 +1529,20 @@ export default function Configuracion() {
         {/* ==================== SISTEMA ==================== */}
         {activeTab === "system" && (
           <div className="p-6 space-y-4">
+            {/* ✅ SECCIÓN DE LICENCIA */}
+            <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield
+                  className="text-blue-600 dark:text-blue-400"
+                  size={20}
+                />
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  Información de Licencia
+                </h3>
+              </div>
+              <LicenciaInfo />
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
                 <p className="font-medium text-gray-900 dark:text-white mb-2">
