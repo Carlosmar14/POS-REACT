@@ -1,5 +1,5 @@
 // frontend/src/pages/Activacion.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import Swal from "sweetalert2";
@@ -10,28 +10,45 @@ import {
   Store,
   CheckCircle,
   XCircle,
+  Calendar,
 } from "lucide-react";
 
 export default function Activacion() {
   const navigate = useNavigate();
   const [licenseToken, setLicenseToken] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [licenseStatus, setLicenseStatus] = useState(null);
+  const timeoutRef = useRef(null);
+  const verifiedRef = useRef(false);
 
   useEffect(() => {
+    // Evitar múltiples verificaciones en React StrictMode
+    if (verifiedRef.current) return;
+    verifiedRef.current = true;
+
     checkLicenseStatus();
+
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
   }, []);
 
   const checkLicenseStatus = async () => {
     try {
       const res = await api.get("/license/status");
       setLicenseStatus(res.data.data);
-      if (res.data.data.valid) {
-        setTimeout(() => navigate("/login"), 2000);
+
+      // Solo redirigir si la licencia es válida y NO estamos ya en /login
+      if (res.data.data?.valid && window.location.pathname !== "/login") {
+        timeoutRef.current = setTimeout(() => {
+          navigate("/login");
+        }, 1500);
       }
     } catch (err) {
       console.error("Error verificando licencia:", err);
+      setLicenseStatus({ valid: false, reason: "error" });
     } finally {
       setChecking(false);
     }
@@ -48,7 +65,8 @@ export default function Activacion() {
 
     try {
       const res = await api.post("/license/activate", {
-        licenseToken: licenseToken.trim(),
+        licenseToken: licenseToken.trim().toUpperCase(),
+        customerName: customerName.trim() || "Cliente",
       });
 
       if (res.data.success) {
@@ -66,6 +84,7 @@ export default function Activacion() {
           icon: "success",
         });
 
+        // Redirigir después de éxito
         navigate("/login");
       }
     } catch (err) {
@@ -87,6 +106,7 @@ export default function Activacion() {
     );
   }
 
+  // Si ya tiene licencia válida, mostrar mensaje de bienvenida
   if (licenseStatus?.valid) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4">
@@ -104,10 +124,10 @@ export default function Activacion() {
             {licenseStatus.data?.customerName}
           </p>
           <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 mb-4">
-            <p className="text-sm">
-              Plan: {licenseStatus.data?.plan?.toUpperCase()}
-            </p>
-            <p className="text-sm">Vence: {licenseStatus.data?.endDate}</p>
+            <div className="flex items-center justify-center gap-2 text-sm">
+              <Calendar size={16} />
+              <span>Vence: {licenseStatus.data?.endDate}</span>
+            </div>
             <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-2">
               {licenseStatus.data?.daysLeft} días restantes
             </p>
@@ -132,7 +152,7 @@ export default function Activacion() {
             Activar Licencia
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Ingresa el token de licencia profesional
+            Ingresa el token proporcionado por el proveedor
           </p>
         </div>
 
@@ -150,6 +170,19 @@ export default function Activacion() {
         <form onSubmit={handleActivate} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Nombre del Cliente/Empresa (opcional)
+            </label>
+            <input
+              type="text"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Ej: Café Universal"
+              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Token de Licencia
             </label>
             <div className="relative">
@@ -157,12 +190,12 @@ export default function Activacion() {
                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 size={20}
               />
-              <textarea
+              <input
+                type="text"
                 value={licenseToken}
                 onChange={(e) => setLicenseToken(e.target.value)}
                 placeholder="Pega el token completo aquí"
-                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-xs resize-none"
-                rows={4}
+                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-sm"
                 autoFocus
                 disabled={loading}
               />
@@ -189,9 +222,6 @@ export default function Activacion() {
         <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
           <p className="text-xs text-center text-gray-500 dark:text-gray-400">
             ¿No tienes licencia? Contacta a soporte.
-          </p>
-          <p className="text-xs text-center text-gray-400 dark:text-gray-500 mt-2">
-            POS System v2.0 - Licencia Profesional
           </p>
         </div>
       </div>

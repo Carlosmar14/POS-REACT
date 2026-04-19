@@ -1,6 +1,6 @@
 // frontend/src/pages/Configuracion.jsx
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../store/authStore";
 import Swal from "sweetalert2";
 import api from "../api";
@@ -24,7 +24,6 @@ import {
   X,
   Upload,
   Trash2,
-  Calendar,
 } from "lucide-react";
 
 // ✅ Función para aplicar el tema
@@ -99,6 +98,7 @@ const getDefaultSettings = () => ({
 export default function Configuracion() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [settings, setSettings] = useState(getDefaultSettings());
   const [activeTab, setActiveTab] = useState("notifications");
@@ -128,6 +128,16 @@ export default function Configuracion() {
       check2FAStatus();
     }
   }, [user]);
+
+  // ✅ Auto-abrir modal de 2FA si viene el parámetro setup2fa=true
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("setup2fa") === "true" && user?.role === "admin") {
+      open2FAModal();
+      // Limpiar el parámetro de la URL sin recargar la página
+      navigate("/configuracion", { replace: true });
+    }
+  }, [location, user]);
 
   const loadConfiguracionFromBD = async () => {
     try {
@@ -321,6 +331,9 @@ export default function Configuracion() {
           ...prev,
           security: { ...prev.security, twoFactorAuth: true },
         }));
+
+        // ✅ Eliminar token temporal después de activar 2FA
+        localStorage.removeItem("temp_token");
 
         await saveConfiguracionToBD();
       }

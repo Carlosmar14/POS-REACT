@@ -1,5 +1,5 @@
 // frontend/src/context/ConfigContext.jsx
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useRef } from "react";
 import api from "../api";
 import { useAuth } from "../store/authStore";
 
@@ -20,15 +20,18 @@ const DEFAULT_CONFIG = {
     itemsPerPage: 9,
   },
   invoice: {
-    companyName: "MI TIENDA POS",
-    companyAddress: "Av. Principal #123, Ciudad",
-    companyPhone: "📞 (555) 123-4567",
-    companyEmail: "info@mitienda.com",
-    companyRuc: "123456789",
-    footerMessage: "¡Gracias por su compra!",
+    companyName: "CAFÉ UNIVERSAL",
+    companyAddress: "Avda. Central, 4",
+    companyPhone: "📞 555-123-456",
+    companyEmail: "info@cafeuniversal.com",
+    companyRuc: "C-91233456",
+    footerMessage: "Muchas gracias por su visita",
+    promoMessage: "Le recordamos que cada mañana ofrecemos desayuno...",
+    website: "www.cafeuniversal.com",
+    logo: "",
     paperSize: "80mm",
     copies: 1,
-    taxRate: 19,
+    taxRate: 10,
     showTaxInfo: true,
   },
   security: {
@@ -39,13 +42,13 @@ const DEFAULT_CONFIG = {
     twoFactorAuth: false,
   },
   system: {
-    currency: "USD",
-    currencySymbol: "$",
+    currency: "EUR",
+    currencySymbol: "€",
     language: "es",
     dateFormat: "DD/MM/YYYY",
-    timezone: "America/Santiago",
+    timezone: "Europe/Madrid",
     decimalPlaces: 2,
-    thousandsSeparator: ",",
+    thousandsSeparator: ".",
   },
   printer: {
     printerType: "thermal",
@@ -60,6 +63,7 @@ export const ConfigProvider = ({ children }) => {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
+  const loadedRef = useRef(false);
 
   const loadConfig = async () => {
     if (!user) {
@@ -101,7 +105,10 @@ export const ConfigProvider = ({ children }) => {
   };
 
   useEffect(() => {
-    loadConfig();
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      loadConfig();
+    }
   }, [user]);
 
   useEffect(() => {

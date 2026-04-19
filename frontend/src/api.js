@@ -3,12 +3,16 @@ import axios from "axios";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:3000/api",
-  headers: {
-    "Content-Type": "application/json",
-  },
+  headers: { "Content-Type": "application/json" },
 });
 
-// ✅ Interceptor para añadir token automáticamente
+let isRedirecting = false;
+const resetRedirect = () => {
+  setTimeout(() => {
+    isRedirecting = false;
+  }, 1000);
+};
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("pos_token");
   if (token) {
@@ -17,22 +21,46 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// ✅ Interceptor de respuesta para manejar errores de autenticación
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Limpiar datos de autenticación
-      localStorage.removeItem("pos_token");
-      localStorage.removeItem("pos_user");
+    const status = error.response?.status;
+    const data = error.response?.data;
+    const url = error.config?.url;
 
-      // Redirigir al login si no está ya en login
-      if (!window.location.pathname.includes("/login")) {
+    // Evitar bucles de redirección
+    if (isRedirecting) return Promise.reject(error);
+
+    // Si es error de licencia (403 con licenseRequired)
+    if (status === 403 && data?.licenseRequired) {
+      if (!window.location.pathname.includes("/activacion")) {
+        isRedirecting = true;
+        localStorage.removeItem("pos_token");
+        localStorage.removeItem("pos_user");
+        window.location.href = "/activacion";
+      }
+      return Promise.reject(error);
+    }
+
+    // Si es error de autenticación (401)
+    if (status === 401) {
+      // No redirigir si la petición es /auth/me (evita bucles al restaurar sesión)
+      if (url?.includes("/auth/me")) {
+        return Promise.reject(error);
+      }
+      const path = window.location.pathname;
+      if (!path.includes("/login") && !path.includes("/activacion")) {
+        isRedirecting = true;
+        localStorage.removeItem("pos_token");
+        localStorage.removeItem("pos_user");
         window.location.href = "/login";
       }
+      return Promise.reject(error);
     }
+
     return Promise.reject(error);
   },
 );
 
+window.addEventListener("load", resetRedirect);
 export default api;

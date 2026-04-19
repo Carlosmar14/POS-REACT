@@ -11,7 +11,6 @@ import {
   Shield,
   Key,
   RefreshCw,
-  X,
 } from "lucide-react";
 
 export default function Login() {
@@ -20,7 +19,6 @@ export default function Login() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ Estados para 2FA
   const [requires2FA, setRequires2FA] = useState(false);
   const [twoFactorToken, setTwoFactorToken] = useState("");
   const [pendingEmail, setPendingEmail] = useState("");
@@ -29,7 +27,6 @@ export default function Login() {
   const navigate = useNavigate();
   const login = useAuth((s) => s.login);
 
-  // ✅ Función principal de login
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErr("");
@@ -37,15 +34,12 @@ export default function Login() {
 
     try {
       const payload = { email, password };
-
-      // Si estamos en flujo 2FA, incluir el código
       if (requires2FA && twoFactorToken) {
         payload.twoFactorToken = twoFactorToken;
       }
 
       const res = await api.post("/auth/login", payload);
 
-      // ✅ Caso: Backend solicita verificación 2FA
       if (res.data.requires2FA) {
         setRequires2FA(true);
         setPendingEmail(res.data.data.email);
@@ -55,27 +49,18 @@ export default function Login() {
         return;
       }
 
-      // ✅ Caso: Login exitoso completo
       if (res.data.success) {
-        // Guardar token y usuario en localStorage
         localStorage.setItem("pos_token", res.data.data.accessToken);
         localStorage.setItem("pos_user", JSON.stringify(res.data.data.user));
-
-        // Actualizar estado global
         login({
           user: res.data.data.user,
           accessToken: res.data.data.accessToken,
         });
 
-        // Redirigir según rol
         const userRole = res.data.data.user.role;
-        if (userRole === "admin") {
-          navigate("/reportes");
-        } else if (userRole === "warehouse") {
-          navigate("/stock");
-        } else {
-          navigate("/caja");
-        }
+        if (userRole === "admin") navigate("/reportes");
+        else if (userRole === "warehouse") navigate("/stock");
+        else navigate("/caja");
       }
     } catch (e) {
       console.error("❌ Error en login:", e);
@@ -86,7 +71,6 @@ export default function Login() {
     }
   };
 
-  // ✅ Verificar código 2FA (segundo paso)
   const verify2FA = async () => {
     if (!twoFactorToken || twoFactorToken.length !== 6) {
       return setErr("Ingresa un código de 6 dígitos válido");
@@ -96,7 +80,6 @@ export default function Login() {
     setErr("");
 
     try {
-      // Enviar credenciales completas + código 2FA
       const res = await api.post("/auth/login", {
         email: pendingEmail || email,
         password,
@@ -106,20 +89,15 @@ export default function Login() {
       if (res.data.success) {
         localStorage.setItem("pos_token", res.data.data.accessToken);
         localStorage.setItem("pos_user", JSON.stringify(res.data.data.user));
-
         login({
           user: res.data.data.user,
           accessToken: res.data.data.accessToken,
         });
 
         const userRole = res.data.data.user.role;
-        if (userRole === "admin") {
-          navigate("/reportes");
-        } else if (userRole === "warehouse") {
-          navigate("/stock");
-        } else {
-          navigate("/caja");
-        }
+        if (userRole === "admin") navigate("/reportes");
+        else if (userRole === "warehouse") navigate("/stock");
+        else navigate("/caja");
       }
     } catch (e) {
       console.error("❌ Error verificando 2FA:", e);
@@ -130,35 +108,30 @@ export default function Login() {
     }
   };
 
-  // ✅ Cancelar flujo 2FA y volver al login
   const cancel2FA = () => {
     setRequires2FA(false);
     setTwoFactorToken("");
     setPendingEmail("");
     setTempToken(null);
-    setPassword(""); // Limpiar password por seguridad
+    setPassword("");
     setErr("");
   };
 
-  // ✅ Manejar input de código 2FA (solo números, máximo 6 dígitos)
   const handle2FAInput = (e) => {
     const value = e.target.value.replace(/\D/g, "").slice(0, 6);
     setTwoFactorToken(value);
   };
 
-  // ✅ Manejar tecla Enter en input 2FA
   const handle2FAKeyPress = (e) => {
     if (e.key === "Enter" && twoFactorToken.length === 6 && !loading) {
       verify2FA();
     }
   };
 
-  // ✅ Modal para código 2FA
   const TwoFAModal = () => (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 transition-colors">
       <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-          {/* Header */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden transition-colors duration-300">
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-8 py-6 text-center">
             <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
               <Shield className="text-white" size={32} />
@@ -171,30 +144,28 @@ export default function Login() {
             </p>
           </div>
 
-          {/* Body */}
           <div className="p-8 space-y-5">
             <div className="text-center">
-              <p className="text-gray-700 mb-2">
+              <p className="text-gray-700 dark:text-gray-300 mb-2">
                 Ingresa el código de 6 dígitos de tu app autenticadora para:
               </p>
-              <p className="font-semibold text-gray-900">
+              <p className="font-semibold text-gray-900 dark:text-white">
                 {pendingEmail || email}
               </p>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Código de verificación
               </label>
               <div className="relative">
                 <Key
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
                   size={20}
                 />
                 <input
                   type="text"
                   inputMode="numeric"
-                  pattern="[0-9]{6}"
                   maxLength={6}
                   placeholder="000000"
                   value={twoFactorToken}
@@ -202,16 +173,19 @@ export default function Login() {
                   onKeyPress={handle2FAKeyPress}
                   disabled={loading}
                   autoFocus
-                  className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl text-center text-2xl tracking-widest font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl 
+                             bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                             text-center text-2xl tracking-widest font-mono 
+                             focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                 />
               </div>
-              <p className="text-xs text-gray-500 mt-2">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                 Código de Google Authenticator, Authy o similar
               </p>
             </div>
 
             {err && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
+              <div className="p-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-red-700 dark:text-red-400 text-sm">
                 {err}
               </div>
             )}
@@ -221,7 +195,9 @@ export default function Login() {
                 type="button"
                 onClick={cancel2FA}
                 disabled={loading}
-                className="flex-1 py-3 px-4 border-2 border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+                className="flex-1 py-3 px-4 border-2 border-gray-300 dark:border-gray-600 rounded-xl 
+                           text-gray-700 dark:text-gray-300 font-medium 
+                           hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
               >
                 Cancelar
               </button>
@@ -229,7 +205,9 @@ export default function Login() {
                 type="button"
                 onClick={verify2FA}
                 disabled={loading || twoFactorToken.length !== 6}
-                className="flex-1 py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-medium hover:from-blue-700 hover:to-blue-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
+                className="flex-1 py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-700 
+                           hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-medium 
+                           transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
               >
                 {loading ? (
                   <RefreshCw size={18} className="animate-spin" />
@@ -244,29 +222,13 @@ export default function Login() {
                 )}
               </button>
             </div>
-
-            <div className="text-center pt-2">
-              <p className="text-xs text-gray-500">
-                ¿Perdiste acceso a tu app?{" "}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setErr("Contacta al administrador para recuperar el acceso")
-                  }
-                  className="text-blue-600 hover:underline font-medium"
-                >
-                  Usar código de respaldo
-                </button>
-              </p>
-            </div>
           </div>
 
-          {/* Footer */}
-          <div className="px-8 py-4 bg-gray-50 border-t border-gray-100 text-center">
-            <p className="text-xs text-gray-500">
+          <div className="px-8 py-4 bg-gray-50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-700 text-center">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               POS System Professional v2.0
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
               © 2026 Todos los derechos reservados
             </p>
           </div>
@@ -275,17 +237,14 @@ export default function Login() {
     </div>
   );
 
-  // ✅ Renderizar modal 2FA si está activo
   if (requires2FA) {
     return <TwoFAModal />;
   }
 
-  // ✅ Renderizar login normal
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4 transition-colors duration-300">
       <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
-          {/* Header */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl overflow-hidden transition-colors duration-300">
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-8 py-6 text-center">
             <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-2xl mb-4 backdrop-blur-sm">
               <Store className="text-white" size={32} />
@@ -296,15 +255,14 @@ export default function Login() {
             </p>
           </div>
 
-          {/* Form */}
           <form onSubmit={handleSubmit} className="p-8 space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Email
               </label>
               <div className="relative">
                 <Mail
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
                   size={20}
                 />
                 <input
@@ -314,18 +272,20 @@ export default function Login() {
                   onChange={(e) => setEmail(e.target.value)}
                   required
                   disabled={loading}
-                  className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl 
+                             bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                             focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Contraseña
               </label>
               <div className="relative">
                 <Lock
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
                   size={20}
                 />
                 <input
@@ -335,13 +295,15 @@ export default function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   disabled={loading}
-                  className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl 
+                             bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                             focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                 />
               </div>
             </div>
 
             {err && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
+              <div className="p-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-red-700 dark:text-red-400 text-sm animate-fadeIn">
                 {err}
               </div>
             )}
@@ -349,7 +311,9 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-medium hover:from-blue-700 hover:to-blue-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
+              className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-700 
+                         hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-medium 
+                         transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
             >
               {loading ? (
                 <RefreshCw size={18} className="animate-spin" />
@@ -365,22 +329,25 @@ export default function Login() {
             </button>
           </form>
 
-          {/* Footer */}
-          <div className="px-8 py-4 bg-gray-50 border-t border-gray-100 text-center">
-            <p className="text-xs text-gray-500">
+          <div className="px-8 py-4 bg-gray-50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-700 text-center">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               POS System Professional v2.0
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
               © 2026 Todos los derechos reservados
             </p>
           </div>
         </div>
 
-        {/* Demo credentials */}
-        <p className="text-center text-sm text-gray-500 mt-4">
+        <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-4">
           Demo:{" "}
-          <code className="bg-gray-100 px-2 py-0.5 rounded">admin@pos.com</code>{" "}
-          / <code className="bg-gray-100 px-2 py-0.5 rounded">123456</code>
+          <code className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
+            admin@pos.com
+          </code>{" "}
+          /{" "}
+          <code className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
+            123456
+          </code>
         </p>
       </div>
     </div>

@@ -7,13 +7,13 @@ let licenseStatus = {
   lastCheck: null,
 };
 
-// ✅ Actualizar estado inmediatamente y luego cada 5 minutos
-export const startLicenseMonitor = async () => {
+// ✅ Inicializar el estado inmediatamente (sincrónico no, pero se llama en start)
+export const initializeLicenseMonitor = async () => {
   await updateLicenseStatus();
-  setInterval(updateLicenseStatus, 5 * 60 * 1000);
 };
 
-const updateLicenseStatus = async () => {
+// ✅ Actualizar estado
+export const updateLicenseStatus = async () => {
   try {
     const result = await checkSystemLicense();
     licenseStatus = {
@@ -32,6 +32,13 @@ const updateLicenseStatus = async () => {
   } catch (err) {
     console.error("❌ Error en monitor de licencia:", err);
   }
+};
+
+// ✅ Iniciar monitor periódico
+export const startLicenseMonitor = () => {
+  // Actualizar ya (no esperar al intervalo)
+  updateLicenseStatus();
+  setInterval(updateLicenseStatus, 5 * 60 * 1000);
 };
 
 // ✅ Obtener estado actual (cache)

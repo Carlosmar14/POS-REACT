@@ -1,4 +1,4 @@
-// backend/server.js
+// server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -6,6 +6,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import fs from "fs";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 
 dotenv.config();
 
@@ -15,10 +17,30 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 // ============================================================================
-// 📦 MIDDLEWARE
+// 🛡️ 1. SEGURIDAD: HELMET (CSP CONFIGURADA PARA IMÁGENES LOCALES)
 // ============================================================================
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "blob:", "http://localhost:3000"],
+        connectSrc: [
+          "'self'",
+          "http://localhost:3000",
+          "http://localhost:5173",
+        ],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
+
+// ============================================================================
+// 🌐 2. CORS (DESPUÉS DE HELMET)
+// ============================================================================
 app.use(
   cors({
     origin: [
@@ -34,10 +56,53 @@ app.use(
 );
 
 // ============================================================================
-// 📁 CONFIGURACIÓN DE MULTER PARA UPLOADS
+// 🚦 3. RATE LIMITING (RELAJADO PARA DESARROLLO)
 // ============================================================================
-const uploadDir = path.join(__dirname, "public/uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minuto
+  max: 1000, // 1000 peticiones por minuto
+  message: {
+    success: false,
+    message: "Demasiadas peticiones desde esta IP, intenta más tarde.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    const skipPaths = [
+      "/api/license/status",
+      "/api/health",
+      "/api/auth/update-activity",
+      "/api/products",
+      "/uploads", // Excluir imágenes del límite
+    ];
+    return skipPaths.some((p) => req.path.startsWith(p));
+  },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+});
+
+app.use("/api/", apiLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/license/activate", authLimiter);
+
+// ============================================================================
+// 📦 4. MIDDLEWARE GENERAL (PARSERS)
+// ============================================================================
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// ============================================================================
+// 📁 5. CONFIGURACIÓN DE MULTER Y ARCHIVOS ESTÁTICOS (CON CABECERAS CORRECTAS)
+// ============================================================================
+const uploadDir = path.join(__dirname, "public", "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log(`📁 Carpeta creada: ${uploadDir}`);
+}
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -48,8 +113,8 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const ok = /jpe?g|png|webp/i.test(file.mimetype);
-  cb(ok ? null : new Error("Solo imágenes JPG, PNG o WEBP"), ok);
+  const ok = /jpe?g|png|webp|gif/i.test(file.mimetype);
+  cb(ok ? null : new Error("Solo imágenes JPG, PNG, WEBP o GIF"), ok);
 };
 
 export const upload = multer({
@@ -58,7 +123,21 @@ export const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
+// ✅ MIDDLEWARE PARA SERVIR IMÁGENES CON CABECERAS CORS Y CORP CORRECTAS
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    // Permite que la imagen sea cargada desde cualquier origen (necesario para localhost:5173 -> localhost:3000)
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    // Cache de 1 día para mejorar rendimiento
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    next();
+  },
+  express.static(uploadDir),
+);
+
+console.log(`📁 Sirviendo archivos estáticos desde: ${uploadDir}`);
 
 // ============================================================================
 // 🏥 HEALTH CHECK
@@ -121,7 +200,7 @@ const importRoute = async (routePath, routeName) => {
       reportRoutes,
       logRoutes,
       configuracionRoutes,
-      licenseRoutes, // ✅ NUEVO: Ruta de licencia
+      licenseRoutes,
     ] = await Promise.all([
       importRoute("./src/routes/auth.routes.js", "auth"),
       importRoute("./src/routes/products.routes.js", "products"),
@@ -131,7 +210,7 @@ const importRoute = async (routePath, routeName) => {
       importRoute("./src/routes/reports.routes.js", "reports"),
       importRoute("./src/routes/logs.routes.js", "logs"),
       importRoute("./src/routes/configuracion.routes.js", "configuracion"),
-      importRoute("./src/routes/license.routes.js", "license"), // ✅ NUEVO
+      importRoute("./src/routes/license.routes.js", "license"),
     ]);
 
     // ✅ Cargar middleware de licencia
@@ -150,7 +229,7 @@ const importRoute = async (routePath, routeName) => {
 
     // ✅ Rutas PÚBLICAS (no requieren licencia)
     app.use("/api/auth", authRoutes);
-    app.use("/api/license", licenseRoutes); // ✅ NUEVO: Ruta de activación
+    app.use("/api/license", licenseRoutes);
 
     // ✅ Middleware de licencia - Protege TODAS las rutas siguientes
     app.use("/api", requireLicense);
@@ -173,18 +252,6 @@ const importRoute = async (routePath, routeName) => {
         message: "Backend funcionando correctamente",
         timestamp: new Date().toISOString(),
         license: req.license || null,
-        routes: {
-          public: {
-            auth: "/api/auth/login",
-            license: "/api/license/status",
-            activate: "/api/license/activate",
-          },
-          protected: {
-            configuracion: "/api/configuracion",
-            products: "/api/products",
-            sales: "/api/sales",
-          },
-        },
       });
     });
 
@@ -196,26 +263,6 @@ const importRoute = async (routePath, routeName) => {
       res.status(404).json({
         success: false,
         message: `Ruta no encontrada: ${req.method} ${req.originalUrl}`,
-        availableRoutes: [
-          // Públicas
-          "/api/auth/login",
-          "/api/auth/me",
-          "/api/auth/2fa/setup",
-          "/api/auth/2fa/verify",
-          "/api/license/status",
-          "/api/license/activate",
-          // Protegidas
-          "/api/configuracion",
-          "/api/configuracion/reset",
-          "/api/products",
-          "/api/sales",
-          "/api/sales/stats",
-          "/api/users",
-          "/api/reports",
-          "/api/logs",
-          "/api/test",
-          "/api/health",
-        ],
       });
     });
 
@@ -262,33 +309,14 @@ const importRoute = async (routePath, routeName) => {
     // ============================================================================
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, "0.0.0.0", () => {
+      console.log(`\n✅ POS Backend corriendo en http://localhost:${PORT}`);
+      console.log(`📁 Uploads servidos desde: ${uploadDir}`);
       console.log(
-        `\n╔══════════════════════════════════════════════════════════════╗`,
+        `🔧 Configuración: http://localhost:${PORT}/api/configuracion`,
       );
-      console.log(
-        `║           ✅ POS Backend corriendo en http://localhost:${PORT}           ║`,
-      );
-      console.log(
-        `╠══════════════════════════════════════════════════════════════╣`,
-      );
-      console.log(
-        `║   📁 Uploads:      http://localhost:${PORT}/uploads/          ║`,
-      );
-      console.log(
-        `║   🔧 Configuración: http://localhost:${PORT}/api/configuracion ║`,
-      );
-      console.log(
-        `║   🔐 2FA:          http://localhost:${PORT}/api/auth/2fa/setup║`,
-      );
-      console.log(
-        `║   🔑 Licencia:     http://localhost:${PORT}/api/license/status║`,
-      );
-      console.log(
-        `║   🏥 Health:       http://localhost:${PORT}/api/health        ║`,
-      );
-      console.log(
-        `╚══════════════════════════════════════════════════════════════╝\n`,
-      );
+      console.log(`🔐 2FA: http://localhost:${PORT}/api/auth/2fa/setup`);
+      console.log(`🔑 Licencia: http://localhost:${PORT}/api/license/status`);
+      console.log(`🏥 Health: http://localhost:${PORT}/api/health\n`);
 
       // ✅ Iniciar monitor de licencia DESPUÉS de que el servidor esté corriendo
       startLicenseMonitor();
