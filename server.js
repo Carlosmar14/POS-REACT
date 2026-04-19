@@ -139,6 +139,11 @@ const importRoute = async (routePath, routeName) => {
       await import("./src/middlewares/licenseMiddleware.js");
     console.log("✅ Middleware de licencia cargado");
 
+    // ✅ Cargar monitor de licencia
+    const { startLicenseMonitor } =
+      await import("./src/services/licenseMonitor.js");
+    console.log("✅ Monitor de licencia cargado");
+
     // ============================================================================
     // 🗂️ REGISTRO DE RUTAS
     // ============================================================================
@@ -284,6 +289,10 @@ const importRoute = async (routePath, routeName) => {
       console.log(
         `╚══════════════════════════════════════════════════════════════╝\n`,
       );
+
+      // ✅ Iniciar monitor de licencia DESPUÉS de que el servidor esté corriendo
+      startLicenseMonitor();
+      console.log("🔐 Monitor de licencia iniciado\n");
     });
   } catch (err) {
     console.error("❌ ERROR FATAL al iniciar servidor:", err);

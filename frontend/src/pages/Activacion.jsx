@@ -15,7 +15,6 @@ import {
 export default function Activacion() {
   const navigate = useNavigate();
   const [licenseToken, setLicenseToken] = useState("");
-  const [customerName, setCustomerName] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [licenseStatus, setLicenseStatus] = useState(null);
@@ -27,7 +26,6 @@ export default function Activacion() {
   const checkLicenseStatus = async () => {
     try {
       const res = await api.get("/license/status");
-      console.log("📦 Estado de licencia:", res.data);
       setLicenseStatus(res.data.data);
       if (res.data.data.valid) {
         setTimeout(() => navigate("/login"), 2000);
@@ -47,15 +45,11 @@ export default function Activacion() {
     }
 
     setLoading(true);
-    console.log("📤 Enviando token:", licenseToken.substring(0, 30) + "...");
 
     try {
       const res = await api.post("/license/activate", {
         licenseToken: licenseToken.trim(),
-        customerName: customerName.trim() || null,
       });
-
-      console.log("✅ Respuesta:", res.data);
 
       if (res.data.success) {
         await Swal.fire({
@@ -63,6 +57,7 @@ export default function Activacion() {
           html: `
             <div style="text-align: left;">
               <p><strong>Cliente:</strong> ${res.data.data.customerName}</p>
+              <p><strong>Plan:</strong> ${res.data.data.plan?.toUpperCase()}</p>
               <p><strong>Válida desde:</strong> ${res.data.data.startDate}</p>
               <p><strong>Válida hasta:</strong> ${res.data.data.endDate}</p>
               <p><strong>Días restantes:</strong> ${res.data.data.daysLeft}</p>
@@ -74,7 +69,6 @@ export default function Activacion() {
         navigate("/login");
       }
     } catch (err) {
-      console.error("❌ Error:", err.response?.data);
       Swal.fire(
         "Error",
         err.response?.data?.message || "Token inválido",
@@ -107,12 +101,15 @@ export default function Activacion() {
             ¡Licencia Activa!
           </h2>
           <p className="text-gray-600 dark:text-gray-400 mb-2">
-            {licenseStatus.data.customerName}
+            {licenseStatus.data?.customerName}
           </p>
           <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 mb-4">
-            <p className="text-sm">Vence: {licenseStatus.data.endDate}</p>
+            <p className="text-sm">
+              Plan: {licenseStatus.data?.plan?.toUpperCase()}
+            </p>
+            <p className="text-sm">Vence: {licenseStatus.data?.endDate}</p>
             <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-2">
-              {licenseStatus.data.daysLeft} días restantes
+              {licenseStatus.data?.daysLeft} días restantes
             </p>
           </div>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
@@ -135,7 +132,7 @@ export default function Activacion() {
             Activar Licencia
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Ingresa el token proporcionado por el proveedor
+            Ingresa el token de licencia profesional
           </p>
         </div>
 
@@ -153,19 +150,6 @@ export default function Activacion() {
         <form onSubmit={handleActivate} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Nombre del Cliente/Empresa (opcional)
-            </label>
-            <input
-              type="text"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Ej: Café Universal"
-              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Token de Licencia
             </label>
             <div className="relative">
@@ -173,12 +157,12 @@ export default function Activacion() {
                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 size={20}
               />
-              <input
-                type="text"
+              <textarea
                 value={licenseToken}
                 onChange={(e) => setLicenseToken(e.target.value)}
                 placeholder="Pega el token completo aquí"
-                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-xs resize-none"
+                rows={4}
                 autoFocus
                 disabled={loading}
               />
@@ -205,6 +189,9 @@ export default function Activacion() {
         <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
           <p className="text-xs text-center text-gray-500 dark:text-gray-400">
             ¿No tienes licencia? Contacta a soporte.
+          </p>
+          <p className="text-xs text-center text-gray-400 dark:text-gray-500 mt-2">
+            POS System v2.0 - Licencia Profesional
           </p>
         </div>
       </div>

@@ -1,29 +1,41 @@
 // backend/src/middlewares/licenseMiddleware.js
-import { checkSystemLicense } from "../services/licenseService.js";
+import { getCurrentLicenseStatus } from "../services/licenseMonitor.js";
 
-export const requireLicense = async (req, res, next) => {
-  // Rutas públicas que no requieren licencia
-  const publicPaths = [
-    "/api/license/status",
-    "/api/license/activate",
-    "/api/auth/login"
-  ];
+// Rutas públicas que no requieren licencia
+const PUBLIC_PATHS = [
+  "/api/license/status",
+  "/api/license/activate",
+  "/api/auth/login",
+  "/api/auth/me",
+  "/api/auth/2fa/setup",
+  "/api/auth/2fa/verify",
+  "/api/auth/2fa/disable",
+  "/api/auth/2fa/status",
+  "/api/health",
+  "/api/test"
+];
+
+export const requireLicense = (req, res, next) => {
+  // Verificar si la ruta es pública
+  const isPublicPath = PUBLIC_PATHS.some(path => req.path.startsWith(path));
   
-  if (publicPaths.some(path => req.path.startsWith(path))) {
+  if (isPublicPath) {
     return next();
   }
   
-  const license = await checkSystemLicense();
+  // Verificar licencia usando cache
+  const licenseStatus = getCurrentLicenseStatus();
   
-  if (!license.valid) {
+  if (!licenseStatus.valid) {
     return res.status(403).json({
       success: false,
-      message: license.message || "Licencia requerida",
+      message: "Licencia requerida",
       licenseRequired: true,
-      reason: license.reason
+      redirectTo: "/activacion"
     });
   }
   
-  req.license = license.data;
+  // Adjuntar info de licencia al request
+  req.license = licenseStatus.data;
   next();
 };
