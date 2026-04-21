@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../store/authStore";
 import Swal from "sweetalert2";
 import api from "../api";
+import LoaderPOS from "../components/LoaderPOS"; // ✅ Importamos tu componente
 import {
   Bell,
   Moon,
@@ -15,7 +16,6 @@ import {
   RotateCcw,
   Shield,
   Printer as PrinterIcon,
-  Loader2,
   AlertTriangle,
   CheckCircle,
   Key,
@@ -431,7 +431,7 @@ export default function Configuracion() {
     setVerificationCode(value);
   };
 
-  // ✅ Componente LicenciaInfo
+  // ✅ Componente LicenciaInfo (modificado para usar LoaderPOS)
   const LicenciaInfo = () => {
     const [license, setLicense] = useState(null);
     const [loadingLicense, setLoadingLicense] = useState(true);
@@ -456,8 +456,7 @@ export default function Configuracion() {
     if (loadingLicense) {
       return (
         <div className="flex items-center justify-center py-4">
-          <Loader2 className="animate-spin text-blue-600" size={20} />
-          <span className="ml-2 text-gray-500">Cargando licencia...</span>
+          <LoaderPOS message="Cargando licencia..." />
         </div>
       );
     }
@@ -616,13 +615,11 @@ export default function Configuracion() {
     { id: "system", label: "Sistema", icon: Database },
   ];
 
+  // ✅ Carga principal: reemplazamos Loader2 por LoaderPOS
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen">
-        <Loader2 className="animate-spin text-blue-600 mb-4" size={32} />
-        <p className="text-gray-500 dark:text-gray-400">
-          Cargando configuración...
-        </p>
+      <div className="min-h-screen flex items-center justify-center">
+        <LoaderPOS message="Cargando configuración..." />
       </div>
     );
   }
@@ -1729,9 +1726,7 @@ export default function Configuracion() {
             className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
           >
             {saving ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" /> Guardando...
-              </>
+              <>Guardando...</> // ✅ Eliminado el spinner pequeño, solo texto
             ) : (
               <>
                 <Save size={18} /> Guardar cambios

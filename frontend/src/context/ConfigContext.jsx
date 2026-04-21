@@ -2,6 +2,7 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import api from "../api";
 import { useAuth } from "../store/authStore";
+import LoaderPOS from "../components/LoaderPOS"; // ✅ Importamos tu componente
 
 const ConfigContext = createContext();
 
@@ -140,6 +141,15 @@ export const ConfigProvider = ({ children }) => {
       new CustomEvent("configUpdated", { detail: newConfig }),
     );
   };
+
+  // ✅ Mientras la configuración está cargando, mostramos tu LoaderPOS
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen w-full bg-gray-50 dark:bg-gray-900">
+        <LoaderPOS message="Cargando configuración..." />
+      </div>
+    );
+  }
 
   return (
     <ConfigContext.Provider

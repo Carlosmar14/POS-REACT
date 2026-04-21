@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { FileText, Clock, Search } from "lucide-react";
+import LoaderPOS from "../components/LoaderPOS";
 
 export default function Logs() {
   const [logs, setLogs] = useState([]);
@@ -31,8 +32,7 @@ export default function Logs() {
   if (loading)
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="spinner" />
-        <span className="ml-3 text-gray-500">Cargando...</span>
+        <LoaderPOS message="Cargando registros..." />
       </div>
     );
 

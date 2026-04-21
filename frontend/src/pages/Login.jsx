@@ -3,15 +3,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import { useAuth } from "../store/authStore";
-import {
-  Store,
-  Mail,
-  Lock,
-  ArrowRight,
-  Shield,
-  Key,
-  RefreshCw,
-} from "lucide-react";
+import { Store, Mail, Lock, ArrowRight, Shield, Key } from "lucide-react";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -210,7 +202,8 @@ export default function Login() {
                            transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
               >
                 {loading ? (
-                  <RefreshCw size={18} className="animate-spin" />
+                  // ✅ Eliminado el spinner, solo texto
+                  <span>Verificando...</span>
                 ) : (
                   <>
                     <span>Verificar</span>
@@ -316,7 +309,8 @@ export default function Login() {
                          transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
             >
               {loading ? (
-                <RefreshCw size={18} className="animate-spin" />
+                // ✅ Eliminado el spinner, solo texto
+                <span>Ingresando...</span>
               ) : (
                 <>
                   <span>Ingresar al Sistema</span>

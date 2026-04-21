@@ -1,3 +1,4 @@
+// backend/routes/sales.routes.js
 import express from "express";
 import { pool } from "../config/db.js";
 import { verifyToken } from "../middlewares/auth.js";
@@ -6,7 +7,6 @@ import z from "zod";
 const router = express.Router();
 
 // 🔐 Helper robusto para extraer usuario sin importar cómo venga el JWT
-// Limpia espacios, convierte a minúsculas y busca el ID en múltiples campos posibles
 const getAuthUser = (req) => ({
   id: req.user?.id || req.user?.sub || req.user?.userId,
   role: (req.user?.role || req.user?.rol || "").trim().toLowerCase(),
@@ -25,12 +25,12 @@ const saleSchema = z.object({
 });
 
 // ============================================================================
-// ✅ GET /stats - Estadísticas
+// ✅ GET /stats - Estadísticas (con filtro paymentMethod)
 // ============================================================================
 router.get("/stats", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
-    const { start, end, status } = req.query;
+    const { start, end, status, paymentMethod } = req.query;
     const conditions = [];
     const values = [];
 
@@ -40,15 +40,23 @@ router.get("/stats", verifyToken, async (req, res) => {
       values.push(user.id);
     }
 
-    if (start)
-      (conditions.push(`s.created_at >= $${values.length + 1}`),
-        values.push(new Date(start)));
-    if (end)
-      (conditions.push(`s.created_at <= $${values.length + 1}`),
-        values.push(new Date(end + "T23:59:59")));
-    if (status)
-      (conditions.push(`s.status = $${values.length + 1}`),
-        values.push(status));
+    if (start) {
+      conditions.push(`s.created_at >= $${values.length + 1}`);
+      values.push(new Date(start));
+    }
+    if (end) {
+      conditions.push(`s.created_at <= $${values.length + 1}`);
+      values.push(new Date(end + "T23:59:59"));
+    }
+    if (status) {
+      conditions.push(`s.status = $${values.length + 1}`);
+      values.push(status);
+    }
+    // ✅ FILTRO POR MÉTODO DE PAGO
+    if (paymentMethod) {
+      conditions.push(`s.payment_method = $${values.length + 1}`);
+      values.push(paymentMethod);
+    }
 
     const colRes = await pool.query(`
       SELECT column_name FROM information_schema.columns 
@@ -91,25 +99,30 @@ router.get("/stats", verifyToken, async (req, res) => {
 });
 
 // ============================================================================
-// 📦 GET /stock-movements - Historial de Stock
+// 📦 GET /stock-movements - Historial de Stock (con normalización de tipos)
 // ============================================================================
 router.get("/stock-movements", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
 
-    // ✅ Permiso: Solo warehouse/admin pueden ver historial de stock
     if (!["warehouse", "admin"].includes(user.role)) {
       return res
         .status(403)
         .json({ success: false, message: "Acceso denegado" });
     }
 
-    const { start, end, page = 1, limit = 20, productId } = req.query;
+    const {
+      start,
+      end,
+      page = 1,
+      limit = 20,
+      productId,
+      movementType,
+    } = req.query;
     const offset = (parseInt(page) - 1) * Math.max(parseInt(limit), 1);
     const conditions = [];
     const values = [];
 
-    // 🔒 AISLAMIENTO: Si NO es admin, solo ve SUS movimientos
     if (user.role !== "admin") {
       conditions.push(`sm.created_by = $${values.length + 1}::uuid`);
       values.push(user.id);
@@ -128,25 +141,58 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
       values.push(new Date(end + "T23:59:59"));
     }
 
-    let sql = `
-      SELECT sm.id, sm.product_id, sm.quantity, sm.movement_type, sm.reason,
-             sm.created_at, sm.created_by,
-             p.name AS product_name, p.sku,
-             COALESCE(u.name, 'Sistema') AS user_name
+    if (movementType) {
+      if (movementType === "increase") {
+        conditions.push(
+          `(sm.movement_type IN ('increase', 'purchase', 'entrada'))`,
+        );
+      } else if (movementType === "decrease") {
+        conditions.push(`(sm.movement_type IN ('decrease', 'sale', 'salida'))`);
+      } else {
+        conditions.push(`sm.movement_type = $${values.length + 1}`);
+        values.push(movementType);
+      }
+    }
+
+    const whereSQL =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const query = `
+      SELECT 
+        sm.id,
+        sm.product_id,
+        sm.quantity,
+        CASE 
+          WHEN sm.movement_type IN ('purchase', 'increase', 'entrada') THEN 'increase'
+          WHEN sm.movement_type IN ('sale', 'decrease', 'salida') THEN 'decrease'
+          ELSE sm.movement_type
+        END AS movement_type,
+        sm.reason,
+        sm.created_by,
+        sm.created_at,
+        p.name AS product_name,
+        p.sku,
+        p.image_url,
+        COALESCE(u.name, 'Sistema') AS user_name,
+        ABS(sm.quantity) AS abs_quantity
       FROM stock_movements sm
       JOIN products p ON sm.product_id = p.id
       LEFT JOIN users u ON sm.created_by = u.id
+      ${whereSQL}
+      ORDER BY sm.created_at DESC
+      LIMIT $${values.length + 1} OFFSET $${values.length + 2}
     `;
-    if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
-
-    sql += ` ORDER BY sm.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
     values.push(parseInt(limit), offset);
 
-    const result = await pool.query(sql, values);
+    const result = await pool.query(query, values);
 
-    let countSql = `SELECT COUNT(*) FROM stock_movements sm`;
-    if (conditions.length > 0) countSql += ` WHERE ${conditions.join(" AND ")}`;
-    const countResult = await pool.query(countSql, values.slice(0, -2));
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM stock_movements sm
+      ${whereSQL}
+    `;
+    const countValues = values.slice(0, -2);
+    const countResult = await pool.query(countQuery, countValues);
     const totalRecords = parseInt(countResult.rows[0].count);
 
     return res.json({
@@ -174,7 +220,6 @@ router.post("/stock-movements", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
 
-    // ✅ Permiso: Solo warehouse/admin pueden crear movimientos
     if (!["warehouse", "admin"].includes(user.role)) {
       return res
         .status(403)
@@ -217,7 +262,6 @@ router.post("/stock-movements", verifyToken, async (req, res) => {
         [newStock, productId],
       );
 
-      // ✅ Se guarda el user.id del creador para que el filtro funcione después
       await client.query(
         `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by) 
          VALUES ($1::uuid, $2, $3, $4, $5::uuid) RETURNING id, created_at`,
@@ -281,12 +325,10 @@ router.post("/", verifyToken, async (req, res) => {
 
       if (productRes.rows.length === 0) {
         await client.query("ROLLBACK");
-        return res
-          .status(404)
-          .json({
-            success: false,
-            message: `Producto no encontrado: ${item.productId}`,
-          });
+        return res.status(404).json({
+          success: false,
+          message: `Producto no encontrado: ${item.productId}`,
+        });
       }
 
       const product = productRes.rows[0];
@@ -295,12 +337,10 @@ router.post("/", verifyToken, async (req, res) => {
 
       if (stock < item.quantity) {
         await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: `Stock insuficiente para "${product.name}"`,
-          });
+        return res.status(400).json({
+          success: false,
+          message: `Stock insuficiente para "${product.name}"`,
+        });
       }
 
       await client.query(
@@ -347,7 +387,7 @@ router.post("/", verifyToken, async (req, res) => {
       );
     }
 
-    // Registrar movimiento de stock automáticamente
+    // Registrar movimientos de stock por la venta
     try {
       for (const item of items) {
         await client.query(
@@ -387,12 +427,10 @@ router.post("/", verifyToken, async (req, res) => {
     await client.query("ROLLBACK");
     console.error("❌ Error en venta:", err);
     if (err.name === "ZodError") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: err.errors.map((e) => e.message).join(", "),
-        });
+      return res.status(400).json({
+        success: false,
+        message: err.errors.map((e) => e.message).join(", "),
+      });
     }
     return res
       .status(500)
@@ -403,12 +441,19 @@ router.post("/", verifyToken, async (req, res) => {
 });
 
 // ============================================================================
-// ✅ GET / - Historial de Ventas (Paginado)
+// ✅ GET / - Historial de Ventas (Paginado) - CON FILTRO paymentMethod CORREGIDO
 // ============================================================================
 router.get("/", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
-    const { start, end, page = 1, limit = 20, status } = req.query;
+    const {
+      start,
+      end,
+      page = 1,
+      limit = 20,
+      status,
+      paymentMethod,
+    } = req.query;
     const offset = (parseInt(page) - 1) * Math.max(parseInt(limit), 1);
     const conditions = [];
     const values = [];
@@ -419,15 +464,23 @@ router.get("/", verifyToken, async (req, res) => {
       values.push(user.id);
     }
 
-    if (start)
-      (conditions.push(`s.created_at >= $${values.length + 1}`),
-        values.push(new Date(start)));
-    if (end)
-      (conditions.push(`s.created_at <= $${values.length + 1}`),
-        values.push(new Date(end + "T23:59:59")));
-    if (status)
-      (conditions.push(`s.status = $${values.length + 1}`),
-        values.push(status));
+    if (start) {
+      conditions.push(`s.created_at >= $${values.length + 1}`);
+      values.push(new Date(start));
+    }
+    if (end) {
+      conditions.push(`s.created_at <= $${values.length + 1}`);
+      values.push(new Date(end + "T23:59:59"));
+    }
+    if (status) {
+      conditions.push(`s.status = $${values.length + 1}`);
+      values.push(status);
+    }
+    // ✅ CORRECCIÓN: Agregar filtro por método de pago
+    if (paymentMethod) {
+      conditions.push(`s.payment_method = $${values.length + 1}`);
+      values.push(paymentMethod);
+    }
 
     const colRes = await pool.query(`
       SELECT column_name FROM information_schema.columns 

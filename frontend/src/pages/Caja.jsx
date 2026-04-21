@@ -6,6 +6,7 @@ import { useCart } from "../store/cartStore";
 import { useAuth } from "../store/authStore";
 import Swal from "sweetalert2";
 import TicketToPrint from "../components/TicketToPrint";
+import LoaderPOS from "../components/LoaderPOS"; // ✅ Importamos tu componente
 import {
   Search,
   Minus,
@@ -23,12 +24,94 @@ import {
   Filter,
   X,
   Camera,
+  // ✅ Íconos para categorías (mismos que en Categorias.jsx)
+  Apple,
+  GlassWater,
+  SprayCan,
+  HeartPulse,
+  Hammer,
+  Cog,
+  Smartphone,
+  PenLine,
+  Blocks,
+  Dog,
+  ShoppingBag,
+  Shirt,
+  Snowflake,
+  Croissant,
+  Milk,
+  Ham,
+  Carrot,
+  Wheat,
+  Sparkles,
+  Pill,
+  Wrench,
+  Lightbulb,
+  Palette,
+  Sprout,
+  Tag,
+  Coffee,
+  Pizza,
+  Utensils,
+  Laptop,
+  Home,
+  Car,
+  Book,
+  Gamepad2,
+  Music,
+  Camera as CameraIcon,
+  Gift,
+  Store,
+  Grid,
 } from "lucide-react";
 
 // ✅ SEPARAR URL de API y URL de UPLOADS para imágenes
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 const UPLOADS_URL = import.meta.env.VITE_UPLOADS_URL || "http://localhost:3000";
 const DEFAULT_ITEMS_PER_PAGE = 9;
+
+// ✅ Mapeo de íconos (idéntico al de Categorias.jsx)
+const ICON_OPTIONS = {
+  Apple,
+  GlassWater,
+  SprayCan,
+  HeartPulse,
+  Hammer,
+  Cog,
+  Smartphone,
+  PenLine,
+  Blocks,
+  Dog,
+  ShoppingBag,
+  Shirt,
+  Snowflake,
+  Croissant,
+  Milk,
+  Ham,
+  Carrot,
+  Wheat,
+  Sparkles,
+  Pill,
+  Wrench,
+  Lightbulb,
+  Palette,
+  Sprout,
+  Tag,
+  Package,
+  Coffee,
+  Pizza,
+  Utensils,
+  Laptop,
+  Home,
+  Car,
+  Book,
+  Gamepad2,
+  Music,
+  CameraIcon,
+  Gift,
+  Store,
+  Grid,
+};
 
 // ✅ Estilos para SweetAlert2
 const swalStyles = `
@@ -659,6 +742,7 @@ export default function Caja() {
     );
   };
 
+  // ✅ FilterBar con iconos en las categorías
   const FilterBar = () => (
     <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200 space-y-3">
       <div className="flex items-center gap-3">
@@ -725,15 +809,23 @@ export default function Caja() {
             >
               Todas
             </button>
-            {categories.map((cat) => (
-              <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium ${selectedCategory === cat.id ? "bg-blue-500 text-white" : "bg-gray-100 hover:bg-gray-200"}`}
-              >
-                {cat.name}
-              </button>
-            ))}
+            {categories.map((cat) => {
+              const IconComponent = ICON_OPTIONS[cat.icon] || Tag;
+              return (
+                <button
+                  key={cat.id}
+                  onClick={() => setSelectedCategory(cat.id)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 transition-colors ${
+                    selectedCategory === cat.id
+                      ? "bg-blue-500 text-white"
+                      : "bg-gray-100 hover:bg-gray-200 text-gray-700"
+                  }`}
+                >
+                  <IconComponent size={14} />
+                  <span>{cat.name}</span>
+                </button>
+              );
+            })}
           </div>
           {(searchTerm || selectedCategory !== "all") && (
             <button
@@ -769,13 +861,11 @@ export default function Caja() {
       </div>
     );
 
+  // ✅ Carga principal: usamos LoaderPOS en lugar del spinner manual
   if (loading)
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-500 rounded-full animate-spin" />
-        <span className="text-gray-500 mt-4 font-medium">
-          Cargando productos...
-        </span>
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <LoaderPOS message="Cargando productos..." />
       </div>
     );
 
@@ -989,7 +1079,7 @@ export default function Caja() {
               >
                 {processing ? (
                   <>
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {/* ✅ Eliminado el spinner circular, solo texto */}
                     Procesando venta...
                   </>
                 ) : (

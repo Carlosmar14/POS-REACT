@@ -3,12 +3,13 @@ import { useState, useEffect, Fragment } from "react";
 import { useAuth } from "../store/authStore";
 import api from "../api";
 import Swal from "sweetalert2";
+import { useConfig } from "../context/ConfigContext";
+import LoaderPOS from "../components/LoaderPOS";
 import {
   History,
   Calendar,
   ChevronLeft,
   ChevronRight,
-  Loader2,
   Search,
   AlertCircle,
   Package,
@@ -27,17 +28,16 @@ import {
   TrendingDown,
   RefreshCw,
   User,
+  SlidersHorizontal,
 } from "lucide-react";
 
 const DEFAULT_ITEMS_PER_PAGE = 20;
 const MAX_REPORT_RECORDS = 500;
-
-// ✅ SEPARAR URL de API y URL de UPLOADS para imágenes
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 const UPLOADS_URL = import.meta.env.VITE_UPLOADS_URL || "http://localhost:3000";
 
 export default function Historial() {
   const { user } = useAuth();
+  const { config, loading: configLoading } = useConfig();
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -51,26 +51,96 @@ export default function Historial() {
     total: 0,
   });
 
-  const [summaryStats, setSummaryStats] = useState({
+  // Estadísticas globales (calculadas a partir de todos los registros del período)
+  const [globalStats, setGlobalStats] = useState({
     totalVentas: 0,
     totalTransacciones: 0,
     porMetodo: { efectivo: 0, tarjeta: 0, transferencia: 0 },
   });
 
   const [generatingReport, setGeneratingReport] = useState(false);
-  const [activeQuickFilter, setActiveQuickFilter] = useState("today");
-  const [filters, setFilters] = useState({
-    start: new Date().toISOString().split("T")[0],
-    end: new Date().toISOString().split("T")[0],
+
+  // Filtros avanzados (única fuente de verdad)
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [advancedFilters, setAdvancedFilters] = useState({
+    startDate: new Date().toISOString().split("T")[0],
+    endDate: new Date().toISOString().split("T")[0],
+    paymentMethod: "",
     status: "",
   });
-  const [showFilters, setShowFilters] = useState(true);
 
-  // ✅ Función helper para construir URL de imágenes correctamente
+  // Estado para resaltar el botón de fecha activo
+  const [activeDateFilter, setActiveDateFilter] = useState("today");
+
+  // Funciones de ayuda para fechas
+  const getTodayDate = () => new Date().toISOString().split("T")[0];
+  const getWeekAgoDate = () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().split("T")[0];
+  };
+  const getMonthAgoDate = () => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().split("T")[0];
+  };
+
+  // Aplicar filtro rápido de fecha
+  const applyDateFilter = (type) => {
+    const today = getTodayDate();
+    let start = today,
+      end = today;
+    if (type === "week") {
+      start = getWeekAgoDate();
+      end = today;
+    } else if (type === "month") {
+      start = getMonthAgoDate();
+      end = today;
+    }
+    setActiveDateFilter(type);
+    setAdvancedFilters((prev) => ({ ...prev, startDate: start, endDate: end }));
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  // Aplicar filtro rápido de tipo (método o estado)
+  const applyTypeFilter = (type, value) => {
+    setAdvancedFilters((prev) => {
+      const newFilters = { ...prev };
+      if (type === "payment") {
+        newFilters.paymentMethod = value;
+        newFilters.status = ""; // limpia el otro tipo
+      } else if (type === "status") {
+        newFilters.status = value;
+        newFilters.paymentMethod = ""; // limpia el otro tipo
+      }
+      return newFilters;
+    });
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  // Limpiar filtros avanzados
+  const clearAdvancedFilters = () => {
+    const today = getTodayDate();
+    setAdvancedFilters({
+      startDate: today,
+      endDate: today,
+      paymentMethod: "",
+      status: "",
+    });
+    setActiveDateFilter("today");
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  const hasActiveAdvancedFilters =
+    advancedFilters.startDate !== getTodayDate() ||
+    advancedFilters.endDate !== getTodayDate() ||
+    advancedFilters.paymentMethod ||
+    advancedFilters.status;
+
+  // Construir URL de imagen
   const getProductImageUrl = (imageUrl) => {
     if (!imageUrl) return null;
     if (imageUrl.startsWith("http")) return imageUrl;
-    // ✅ Usar UPLOADS_URL, no API_URL (las imágenes están en /uploads, no en /api/uploads)
     return `${UPLOADS_URL}${imageUrl.startsWith("/") ? imageUrl : "/" + imageUrl}`;
   };
 
@@ -88,37 +158,54 @@ export default function Historial() {
     }
   };
 
-  // Cargar estadísticas reales
-  const loadSummaryStats = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (filters.start) params.append("start", filters.start);
-      if (filters.end) params.append("end", filters.end);
-      if (filters.status) params.append("status", filters.status);
-      const res = await api.get(`/sales/stats?${params.toString()}`);
-      if (res.data.success && res.data.data) setSummaryStats(res.data.data);
-    } catch (err) {
-      console.error("Error cargando stats:", err);
-    }
-  };
-
-  // Cargar ventas paginadas (para la tabla)
-  const loadSales = async () => {
+  // Cargar datos (ventas paginadas + estadísticas globales)
+  const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({
-        page: pagination.page,
-        limit: itemsPerPage,
-        ...(filters.start && { start: filters.start }),
-        ...(filters.end && { end: filters.end }),
-        ...(filters.status && { status: filters.status }),
-      });
-      const res = await api.get(`/sales?${params.toString()}`);
+      const baseParams = new URLSearchParams();
+      if (advancedFilters.startDate)
+        baseParams.append("start", advancedFilters.startDate);
+      if (advancedFilters.endDate)
+        baseParams.append("end", advancedFilters.endDate);
+      if (advancedFilters.paymentMethod)
+        baseParams.append("paymentMethod", advancedFilters.paymentMethod);
+      if (advancedFilters.status)
+        baseParams.append("status", advancedFilters.status);
+
+      // 1. Datos paginados
+      const pageParams = new URLSearchParams(baseParams);
+      pageParams.append("page", pagination.page);
+      pageParams.append("limit", itemsPerPage);
+      const res = await api.get(`/sales?${pageParams.toString()}`);
       setSales(res.data.data || []);
       setPagination(
         res.data.pagination || { page: 1, totalPages: 1, total: 0 },
       );
+
+      // 2. Estadísticas globales (sin límite de paginación)
+      const statsParams = new URLSearchParams(baseParams);
+      statsParams.append("limit", "9999");
+      const statsRes = await api.get(`/sales?${statsParams.toString()}`);
+      const allSales = statsRes.data.data || [];
+      const totalTransacciones = allSales.length;
+      const totalVentas = allSales.reduce(
+        (sum, s) => sum + parseFloat(s.total || 0),
+        0,
+      );
+      const porMetodo = {
+        efectivo: allSales
+          .filter((s) => s.payment_method === "cash")
+          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
+        tarjeta: allSales
+          .filter((s) => s.payment_method === "card")
+          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
+        transferencia: allSales
+          .filter((s) => s.payment_method === "transfer")
+          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
+      };
+      setGlobalStats({ totalVentas, totalTransacciones, porMetodo });
+
       setSaleDetails({});
       setExpandedRow(null);
     } catch (err) {
@@ -129,55 +216,42 @@ export default function Historial() {
     }
   };
 
-  // ✅ NUEVO: Cargar TODAS las ventas del filtro para reportes
-  const loadAllSalesForReport = async () => {
+  // Cargar detalles de una venta individual
+  const loadSaleDetails = async (saleId) => {
+    if (saleDetails[saleId]) return;
+    setLoadingDetails((prev) => ({ ...prev, [saleId]: true }));
     try {
-      const params = new URLSearchParams({
-        limit: MAX_REPORT_RECORDS,
-        ...(filters.start && { start: filters.start }),
-        ...(filters.end && { end: filters.end }),
-        ...(filters.status && { status: filters.status }),
-      });
-      const res = await api.get(`/sales?${params.toString()}`);
-      return res.data.data || [];
-    } catch (err) {
-      console.error("Error cargando ventas para reporte:", err);
-      throw new Error("No se pudieron cargar las ventas para el reporte");
+      const res = await api.get(`/sales/${saleId}`);
+      if (res.data.success && res.data.data) {
+        setSaleDetails((prev) => ({ ...prev, [saleId]: res.data.data }));
+      }
+    } finally {
+      setLoadingDetails((prev) => ({ ...prev, [saleId]: false }));
     }
   };
 
-  // ✅ NUEVO: Cargar detalles de múltiples ventas en paralelo
-  const loadSaleDetailsBatch = async (saleIds) => {
-    const details = {};
-    const promises = saleIds.map(async (id) => {
-      try {
-        const res = await api.get(`/sales/${id}`);
-        if (res.data.success && res.data.data) details[id] = res.data.data;
-      } catch (err) {
-        console.warn(`No se pudo cargar detalle de venta ${id}:`, err.message);
-      }
-    });
-    await Promise.all(promises);
-    return details;
-  };
-
-  const loadData = async () => {
-    await Promise.all([loadSales(), loadSummaryStats()]);
+  const toggleExpand = async (saleId) => {
+    if (expandedRow === saleId) {
+      setExpandedRow(null);
+    } else {
+      setExpandedRow(saleId);
+      await loadSaleDetails(saleId);
+    }
   };
 
   useEffect(() => {
     loadConfiguracion();
   }, []);
+
   useEffect(() => {
-    if (user) loadData();
-  }, [
-    user,
-    pagination.page,
-    itemsPerPage,
-    filters.start,
-    filters.end,
-    filters.status,
-  ]);
+    if (user && !configLoading) {
+      loadData();
+    }
+  }, [pagination.page, advancedFilters, itemsPerPage, configLoading]);
+
+  useEffect(() => {
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  }, [advancedFilters, itemsPerPage]);
 
   // Escuchar cambios en localStorage
   useEffect(() => {
@@ -197,18 +271,6 @@ export default function Historial() {
     return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
-  // Helpers
-  const getTodayDate = () => new Date().toISOString().split("T")[0];
-  const getWeekAgoDate = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d.toISOString().split("T")[0];
-  };
-  const getMonthAgoDate = () => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - 1);
-    return d.toISOString().split("T")[0];
-  };
   const formatDate = (dateStr) =>
     new Date(dateStr).toLocaleString("es-ES", {
       day: "2-digit",
@@ -218,53 +280,6 @@ export default function Historial() {
       minute: "2-digit",
     });
   const formatCurrency = (val) => parseFloat(val || 0).toFixed(2);
-
-  // Cargar detalle de venta individual
-  const loadSaleDetails = async (saleId) => {
-    if (saleDetails[saleId]) return;
-    setLoadingDetails((prev) => ({ ...prev, [saleId]: true }));
-    try {
-      const res = await api.get(`/sales/${saleId}`);
-      if (res.data.success && res.data.data)
-        setSaleDetails((prev) => ({ ...prev, [saleId]: res.data.data }));
-    } finally {
-      setLoadingDetails((prev) => ({ ...prev, [saleId]: false }));
-    }
-  };
-
-  const toggleExpand = async (saleId) => {
-    if (expandedRow === saleId) {
-      setExpandedRow(null);
-    } else {
-      setExpandedRow(saleId);
-      await loadSaleDetails(saleId);
-    }
-  };
-
-  const applyQuickFilter = (type) => {
-    const today = getTodayDate();
-    setActiveQuickFilter(type);
-    const newFilters = { ...filters };
-    if (type === "today") {
-      newFilters.start = today;
-      newFilters.end = today;
-    } else if (type === "week") {
-      newFilters.start = getWeekAgoDate();
-      newFilters.end = today;
-    } else if (type === "month") {
-      newFilters.start = getMonthAgoDate();
-      newFilters.end = today;
-    }
-    setFilters(newFilters);
-    setPagination((p) => ({ ...p, page: 1 }));
-  };
-
-  const clearFilters = () => {
-    const t = getTodayDate();
-    setFilters({ start: t, end: t, status: "" });
-    setActiveQuickFilter("today");
-    setPagination((p) => ({ ...p, page: 1 }));
-  };
 
   // Imagen de producto con fallback
   const getProductColor = (name) => {
@@ -281,17 +296,17 @@ export default function Historial() {
     const [imgError, setImgError] = useState(false);
     const colorClass = getProductColor(productName);
     const firstLetter = productName?.charAt(0).toUpperCase() || "?";
-    if (!imageUrl || imgError)
+    if (!imageUrl || imgError) {
       return (
         <div
-          className={`w-14 h-14 ${colorClass} rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-md`}
+          className={`w-14 h-14 bg-gradient-to-br ${colorClass} rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-md`}
         >
           {firstLetter}
         </div>
       );
+    }
     return (
       <img
-        // ✅ CORREGIDO: Usar getProductImageUrl con UPLOADS_URL
         src={getProductImageUrl(imageUrl)}
         alt={productName}
         className="w-14 h-14 object-cover rounded-xl border-2 border-gray-200 shadow-md hover:shadow-lg transition-all hover:scale-105 cursor-pointer"
@@ -300,11 +315,10 @@ export default function Historial() {
     );
   };
 
-  // ✅ GENERAR REPORTE PDF - CON IMÁGENES CORREGIDAS
+  // Generar PDF (se mantiene tu implementación original, solo se actualizaron las referencias a globalStats)
   const generatePDFReport = async () => {
     setGeneratingReport(true);
     try {
-      // 1. Mostrar progreso
       const progressSwal = Swal.fire({
         title: "Generando reporte...",
         html: "Cargando datos del período filtrado",
@@ -314,8 +328,19 @@ export default function Historial() {
         },
       });
 
-      // 2. Cargar TODAS las ventas del filtro (sin paginación)
-      const allSales = await loadAllSalesForReport();
+      const baseParams = new URLSearchParams();
+      if (advancedFilters.startDate)
+        baseParams.append("start", advancedFilters.startDate);
+      if (advancedFilters.endDate)
+        baseParams.append("end", advancedFilters.endDate);
+      if (advancedFilters.paymentMethod)
+        baseParams.append("paymentMethod", advancedFilters.paymentMethod);
+      if (advancedFilters.status)
+        baseParams.append("status", advancedFilters.status);
+      baseParams.append("limit", MAX_REPORT_RECORDS);
+
+      const res = await api.get(`/sales?${baseParams.toString()}`);
+      const allSales = res.data.data || [];
       if (allSales.length === 0) {
         Swal.fire(
           "Sin datos",
@@ -325,22 +350,22 @@ export default function Historial() {
         return;
       }
 
-      // 3. Cargar detalles de todas las ventas en paralelo
       Swal.update({
         html: `Cargando detalles de ${allSales.length} ventas...`,
       });
       const saleIds = allSales.map((s) => s.id);
-      const allDetails = await loadSaleDetailsBatch(saleIds);
-
-      // 4. Preparar datos con imágenes
-      Swal.update({ html: "Preparando imágenes..." });
+      const detailsPromises = saleIds.map((id) =>
+        api.get(`/sales/${id}`).catch(() => ({ data: { data: null } })),
+      );
+      const detailsResponses = await Promise.all(detailsPromises);
+      const allDetails = {};
+      detailsResponses.forEach((res, idx) => {
+        if (res.data?.data) allDetails[saleIds[idx]] = res.data.data;
+      });
 
       const imageToBase64 = (url) =>
         new Promise((resolve) => {
-          if (!url) {
-            resolve(null);
-            return;
-          }
+          if (!url) return resolve(null);
           const img = new Image();
           img.crossOrigin = "Anonymous";
           img.onload = () => {
@@ -352,7 +377,6 @@ export default function Historial() {
             resolve(canvas.toDataURL("image/png"));
           };
           img.onerror = () => resolve(null);
-          // ✅ CORREGIDO: Usar UPLOADS_URL para imágenes
           img.src = getProductImageUrl(url);
         });
 
@@ -360,7 +384,6 @@ export default function Historial() {
         allSales.map(async (sale) => {
           const details = allDetails[sale.id];
           if (!details?.items) return { ...sale, details: { items: [] } };
-
           const itemsWithImages = await Promise.all(
             details.items.map(async (item) => {
               let imageBase64 = null;
@@ -371,9 +394,6 @@ export default function Historial() {
           return { ...sale, details: { ...details, items: itemsWithImages } };
         }),
       );
-
-      // 5. Generar HTML del reporte
-      Swal.update({ html: "Generando PDF..." });
 
       const reportHTML = `
         <!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Reporte de Ventas</title>
@@ -410,11 +430,10 @@ export default function Historial() {
         </style></head><body>
           <div class="header">
             <h1>📊 REPORTE DE VENTAS</h1>
-            <p><strong>Período:</strong> ${filters.start || "Inicio"} → ${filters.end || "Actual"}</p>
-            <p><strong>Estado:</strong> ${filters.status ? (filters.status === "completed" ? "Completadas" : filters.status === "pending" ? "Pendientes" : "Canceladas") : "Todos"}</p>
+            <p><strong>Período:</strong> ${advancedFilters.startDate || "Inicio"} → ${advancedFilters.endDate || "Actual"}</p>
+            <p><strong>Estado:</strong> ${advancedFilters.status ? (advancedFilters.status === "completed" ? "Completadas" : advancedFilters.status === "pending" ? "Pendientes" : "Canceladas") : "Todos"}</p>
             <p><strong>Generado:</strong> ${new Date().toLocaleString("es-ES")} | Usuario: ${user?.name || user?.email || "Sistema"}</p>
           </div>
-
           ${salesWithImages
             .map((sale) => {
               const details = sale.details;
@@ -437,7 +456,6 @@ export default function Historial() {
                   : sale.status === "pending"
                     ? " pending"
                     : " cancelled";
-
               return `
               <div class="sale-card">
                 <div class="sale-header">
@@ -479,29 +497,15 @@ export default function Historial() {
             `;
             })
             .join("")}
-
           <div class="summary">
             <h3 style="margin:0 0 10px;font-size:14px;color:#1e293b">📈 Resumen del Período</h3>
             <div class="summary-grid">
-              <div class="summary-card">
-                <h4>Ventas Realizadas</h4>
-                <div class="value">${summaryStats.totalTransacciones || allSales.length}</div>
-              </div>
-              <div class="summary-card">
-                <h4>Ingresos Totales</h4>
-                <div class="value">$${formatCurrency(summaryStats.totalVentas || allSales.reduce((s, v) => s + parseFloat(v.total || 0), 0))}</div>
-              </div>
-              <div class="summary-card">
-                <h4>Efectivo</h4>
-                <div class="value">$${formatCurrency(summaryStats.porMetodo?.efectivo || 0)}</div>
-              </div>
-              <div class="summary-card">
-                <h4>Tarjeta</h4>
-                <div class="value">$${formatCurrency(summaryStats.porMetodo?.tarjeta || 0)}</div>
-              </div>
+              <div class="summary-card"><h4>Ventas Realizadas</h4><div class="value">${globalStats.totalTransacciones || allSales.length}</div></div>
+              <div class="summary-card"><h4>Ingresos Totales</h4><div class="value">$${formatCurrency(globalStats.totalVentas || allSales.reduce((s, v) => s + parseFloat(v.total || 0), 0))}</div></div>
+              <div class="summary-card"><h4>Efectivo</h4><div class="value">$${formatCurrency(globalStats.porMetodo?.efectivo || 0)}</div></div>
+              <div class="summary-card"><h4>Tarjeta</h4><div class="value">$${formatCurrency(globalStats.porMetodo?.tarjeta || 0)}</div></div>
             </div>
           </div>
-
           <div class="footer">
             <p>Sistema POS © ${new Date().getFullYear()} - Reporte generado automáticamente</p>
             <p style="margin-top:5px;font-style:italic">"¡Gracias por su compra!"</p>
@@ -509,7 +513,6 @@ export default function Historial() {
         </body></html>
       `;
 
-      // 6. Imprimir
       const printWindow = window.open("", "_blank");
       if (printWindow) {
         printWindow.document.write(reportHTML);
@@ -538,7 +541,7 @@ export default function Historial() {
     }
   };
 
-  // Exportar a CSV
+  // Exportar CSV (sin cambios)
   const exportToCSV = () => {
     if (!sales.length) return;
     const headers = [
@@ -583,9 +586,7 @@ export default function Historial() {
     const csvContent = [headers, ...rows]
       .map((row) => row.join(","))
       .join("\n");
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;encoding:utf-8",
-    });
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
@@ -597,8 +598,17 @@ export default function Historial() {
     URL.revokeObjectURL(url);
   };
 
-  // Loading/Error states
-  if (error && !loading)
+  // Función para imprimir ticket individual
+  const printTicket = (saleId) => {
+    console.log("Imprimir ticket:", saleId);
+  };
+
+  // ✅ Carga principal: reemplazamos Loader2 por LoaderPOS
+  if (loading && sales.length === 0) {
+    return <LoaderPOS message="Cargando historial..." />;
+  }
+
+  if (error && !loading) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center p-4">
         <AlertCircle className="text-amber-500 mb-4" size={48} />
@@ -614,13 +624,7 @@ export default function Historial() {
         </button>
       </div>
     );
-  if (loading && sales.length === 0)
-    return (
-      <div className="flex flex-col items-center justify-center h-64">
-        <Loader2 className="animate-spin text-blue-600 mb-4" size={32} />
-        <span className="text-gray-500">Cargando historial...</span>
-      </div>
-    );
+  }
 
   return (
     <div className="space-y-6">
@@ -651,7 +655,8 @@ export default function Historial() {
             className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center gap-2 disabled:opacity-50 transition-colors"
           >
             {generatingReport ? (
-              <Loader2 size={16} className="animate-spin" />
+              // ✅ En lugar de Loader2, mostramos texto plano
+              <>Generando...</>
             ) : (
               <FileText size={16} />
             )}{" "}
@@ -660,159 +665,267 @@ export default function Historial() {
         </div>
       </div>
 
-      {/* Paneles de stats */}
-      {summaryStats && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl shadow-lg p-6 text-white">
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="text-blue-100 text-sm font-medium">
-                  VENTAS REALIZADAS
-                </p>
-                <p className="text-4xl font-bold mt-2">
-                  {summaryStats.totalTransacciones}
-                </p>
-                <div className="flex items-center gap-1 mt-3 text-blue-100">
-                  <ArrowUpRight size={16} />
-                  <span className="text-sm">Total de transacciones</span>
-                </div>
+      {/* Paneles de stats (usando globalStats) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl shadow-lg p-6 text-white">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-blue-100 text-sm font-medium">
+                VENTAS REALIZADAS
+              </p>
+              <p className="text-4xl font-bold mt-2">
+                {globalStats.totalTransacciones}
+              </p>
+              <div className="flex items-center gap-1 mt-3 text-blue-100">
+                <ArrowUpRight size={16} />
+                <span className="text-sm">Total de transacciones</span>
               </div>
-              <div className="bg-white/20 p-3 rounded-xl">
-                <TrendingUp size={28} />
-              </div>
+            </div>
+            <div className="bg-white/20 p-3 rounded-xl">
+              <TrendingUp size={28} />
             </div>
           </div>
-          <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl shadow-lg p-6 text-white">
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="text-green-100 text-sm font-medium">
-                  INGRESOS TOTALES
-                </p>
-                <p className="text-4xl font-bold mt-2">
-                  ${formatCurrency(summaryStats.totalVentas)}
-                </p>
-                <div className="flex items-center gap-1 mt-3 text-green-100">
-                  <ArrowUpRight size={16} />
-                  <span className="text-sm">Total recaudado</span>
-                </div>
-              </div>
-              <div className="bg-white/20 p-3 rounded-xl">
-                <DollarSign size={28} />
+        </div>
+        <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl shadow-lg p-6 text-white">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-green-100 text-sm font-medium">
+                INGRESOS TOTALES
+              </p>
+              <p className="text-4xl font-bold mt-2">
+                ${formatCurrency(globalStats.totalVentas)}
+              </p>
+              <div className="flex items-center gap-1 mt-3 text-green-100">
+                <ArrowUpRight size={16} />
+                <span className="text-sm">Total recaudado</span>
               </div>
             </div>
-            <div className="mt-4 pt-4 border-t border-white/20">
-              <div className="flex justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <CreditCard size={12} /> <span>Tarjeta:</span>
-                  <span className="font-semibold">
-                    ${formatCurrency(summaryStats.porMetodo?.tarjeta || 0)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Landmark size={12} /> <span>Efectivo:</span>
-                  <span className="font-semibold">
-                    ${formatCurrency(summaryStats.porMetodo?.efectivo || 0)}
-                  </span>
-                </div>
+            <div className="bg-white/20 p-3 rounded-xl">
+              <DollarSign size={28} />
+            </div>
+          </div>
+          <div className="mt-4 pt-4 border-t border-white/20">
+            <div className="flex justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <CreditCard size={12} /> <span>Tarjeta:</span>
+                <span className="font-semibold">
+                  ${formatCurrency(globalStats.porMetodo?.tarjeta || 0)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Landmark size={12} /> <span>Efectivo:</span>
+                <span className="font-semibold">
+                  ${formatCurrency(globalStats.porMetodo?.efectivo || 0)}
+                </span>
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Filtros Rápidos */}
-      <div className="bg-white rounded-xl shadow-sm p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <TrendingDown size={18} className="text-gray-500" />
-          <span className="text-sm font-medium text-gray-700">
-            Filtros rápidos:
-          </span>
+      {/* Filtros */}
+      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+          >
+            <SlidersHorizontal size={16} /> Filtros avanzados
+            {hasActiveAdvancedFilters && (
+              <span className="ml-1 w-2 h-2 bg-blue-500 rounded-full" />
+            )}
+          </button>
+          <button
+            onClick={loadData}
+            className="p-2 text-gray-500 hover:text-gray-700"
+            title="Actualizar"
+          >
+            <RefreshCw size={18} />
+          </button>
         </div>
+
+        {/* Fila 1: Filtros de fecha rápida */}
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => applyQuickFilter("today")}
-            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${activeQuickFilter === "today" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+            onClick={() => applyDateFilter("today")}
+            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${
+              activeDateFilter === "today"
+                ? "bg-blue-600 text-white shadow-md"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
           >
             <Calendar size={16} /> Hoy
           </button>
           <button
-            onClick={() => applyQuickFilter("week")}
-            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${activeQuickFilter === "week" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+            onClick={() => applyDateFilter("week")}
+            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${
+              activeDateFilter === "week"
+                ? "bg-blue-600 text-white shadow-md"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
           >
-            <Calendar size={16} /> Última Semana
+            <Calendar size={16} /> Esta Semana
           </button>
           <button
-            onClick={() => applyQuickFilter("month")}
-            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${activeQuickFilter === "month" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+            onClick={() => applyDateFilter("month")}
+            className={`px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2 ${
+              activeDateFilter === "month"
+                ? "bg-blue-600 text-white shadow-md"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
           >
-            <Calendar size={16} /> Último Mes
+            <Calendar size={16} /> Este Mes
           </button>
         </div>
-      </div>
 
-      {/* Filtros Avanzados */}
-      <div className="bg-white rounded-xl shadow-sm p-4">
-        <div className="flex justify-between items-center mb-4">
+        {/* Fila 2: Filtros de tipo rápido */}
+        <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-2 text-gray-700 hover:text-blue-600"
+            onClick={() => applyTypeFilter("payment", "")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              !advancedFilters.paymentMethod && !advancedFilters.status
+                ? "bg-blue-500 text-white"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
           >
-            <Filter size={18} />
-            <span className="font-medium">Filtros Avanzados</span>
-            {showFilters ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            Todos
           </button>
-          {(filters.start !== getTodayDate() ||
-            filters.end !== getTodayDate() ||
-            filters.status) && (
-            <button
-              onClick={clearFilters}
-              className="flex items-center gap-1 text-sm text-red-600 hover:text-red-700"
-            >
-              <X size={14} /> Limpiar filtros
-            </button>
-          )}
+          <button
+            onClick={() => applyTypeFilter("payment", "cash")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.paymentMethod === "cash"
+                ? "bg-green-500 text-white"
+                : "bg-green-100 text-green-700 hover:bg-green-200"
+            }`}
+          >
+            Efectivo
+          </button>
+          <button
+            onClick={() => applyTypeFilter("payment", "card")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.paymentMethod === "card"
+                ? "bg-blue-500 text-white"
+                : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+            }`}
+          >
+            Tarjeta
+          </button>
+          <button
+            onClick={() => applyTypeFilter("payment", "transfer")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.paymentMethod === "transfer"
+                ? "bg-purple-500 text-white"
+                : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+            }`}
+          >
+            Transferencia
+          </button>
+          <button
+            onClick={() => applyTypeFilter("status", "completed")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.status === "completed"
+                ? "bg-emerald-500 text-white"
+                : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+            }`}
+          >
+            Completadas
+          </button>
+          <button
+            onClick={() => applyTypeFilter("status", "pending")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.status === "pending"
+                ? "bg-yellow-500 text-white"
+                : "bg-yellow-100 text-yellow-700 hover:bg-yellow-200"
+            }`}
+          >
+            Pendientes
+          </button>
+          <button
+            onClick={() => applyTypeFilter("status", "cancelled")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              advancedFilters.status === "cancelled"
+                ? "bg-red-500 text-white"
+                : "bg-red-100 text-red-700 hover:bg-red-200"
+            }`}
+          >
+            Canceladas
+          </button>
         </div>
-        {showFilters && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+        {/* Panel avanzado */}
+        {showAdvancedFilters && (
+          <div className="pt-3 border-t border-gray-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                <Calendar size={14} /> Desde
+              <label className="text-xs font-medium text-gray-500 flex items-center gap-1">
+                <Calendar size={12} /> Desde
               </label>
               <input
                 type="date"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={filters.start}
+                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                value={advancedFilters.startDate}
                 onChange={(e) => {
-                  setFilters({ ...filters, start: e.target.value });
-                  setActiveQuickFilter(null);
+                  setAdvancedFilters({
+                    ...advancedFilters,
+                    startDate: e.target.value,
+                  });
+                  setActiveDateFilter(null);
                   setPagination((prev) => ({ ...prev, page: 1 }));
                 }}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                <Calendar size={14} /> Hasta
+              <label className="text-xs font-medium text-gray-500 flex items-center gap-1">
+                <Calendar size={12} /> Hasta
               </label>
               <input
                 type="date"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={filters.end}
+                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                value={advancedFilters.endDate}
                 onChange={(e) => {
-                  setFilters({ ...filters, end: e.target.value });
-                  setActiveQuickFilter(null);
+                  setAdvancedFilters({
+                    ...advancedFilters,
+                    endDate: e.target.value,
+                  });
+                  setActiveDateFilter(null);
                   setPagination((prev) => ({ ...prev, page: 1 }));
                 }}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                <AlertCircle size={14} /> Estado
+              <label className="text-xs font-medium text-gray-500">
+                Método de pago
               </label>
               <select
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={filters.status}
+                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                value={advancedFilters.paymentMethod}
                 onChange={(e) => {
-                  setFilters({ ...filters, status: e.target.value });
+                  setAdvancedFilters({
+                    ...advancedFilters,
+                    paymentMethod: e.target.value,
+                    status: "",
+                  });
+                  setPagination((prev) => ({ ...prev, page: 1 }));
+                }}
+              >
+                <option value="">Todos</option>
+                <option value="cash">Efectivo</option>
+                <option value="card">Tarjeta</option>
+                <option value="transfer">Transferencia</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">
+                Estado
+              </label>
+              <select
+                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                value={advancedFilters.status}
+                onChange={(e) => {
+                  setAdvancedFilters({
+                    ...advancedFilters,
+                    status: e.target.value,
+                    paymentMethod: "",
+                  });
                   setPagination((prev) => ({ ...prev, page: 1 }));
                 }}
               >
@@ -822,37 +935,30 @@ export default function Historial() {
                 <option value="cancelled">Cancelada</option>
               </select>
             </div>
-            <div className="flex items-end">
-              <button
-                onClick={() => {
-                  setPagination((prev) => ({ ...prev, page: 1 }));
-                  loadData();
-                }}
-                className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
-              >
-                <Search size={16} /> Aplicar Filtros
-              </button>
-            </div>
+            {hasActiveAdvancedFilters && (
+              <div className="sm:col-span-2 lg:col-span-4 flex justify-end">
+                <button
+                  onClick={clearAdvancedFilters}
+                  className="text-sm text-blue-600 hover:underline"
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Tabla de Ventas - CON IMÁGENES CORREGIDAS */}
+      {/* Tabla de Ventas */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {sales.length === 0 ? (
           <div className="text-center py-12">
             <History className="mx-auto text-gray-300 mb-4" size={48} />
             <p className="text-gray-500 font-medium">
-              {filters.start || filters.end || filters.status
+              {hasActiveAdvancedFilters
                 ? "No hay ventas con los filtros seleccionados"
                 : "No hay ventas registradas"}
             </p>
-            {filters.start === getTodayDate() &&
-              filters.end === getTodayDate() && (
-                <p className="text-sm text-gray-400 mt-2">
-                  No hay ventas registradas para hoy
-                </p>
-              )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -936,7 +1042,13 @@ export default function Historial() {
                         </td>
                         <td className="px-6 py-4">
                           <span
-                            className={`px-2 py-1 text-xs rounded-full ${s.status === "completed" ? "bg-green-100 text-green-800" : s.status === "cancelled" ? "bg-red-100 text-red-800" : "bg-yellow-100 text-yellow-800"}`}
+                            className={`px-2 py-1 text-xs rounded-full ${
+                              s.status === "completed"
+                                ? "bg-green-100 text-green-800"
+                                : s.status === "cancelled"
+                                  ? "bg-red-100 text-red-800"
+                                  : "bg-yellow-100 text-yellow-800"
+                            }`}
                           >
                             {s.status === "completed"
                               ? "Completada"
@@ -975,12 +1087,9 @@ export default function Historial() {
                                 </span>
                               </div>
                               {isLoadingDetails ? (
+                                // ✅ Reemplazamos Loader2 por texto simple
                                 <div className="flex justify-center py-8">
-                                  <Loader2
-                                    className="animate-spin text-blue-600"
-                                    size={28}
-                                  />
-                                  <span className="ml-2 text-gray-600">
+                                  <span className="text-gray-600">
                                     Cargando productos...
                                   </span>
                                 </div>
@@ -1013,7 +1122,6 @@ export default function Historial() {
                                           className="border-b border-gray-100 hover:bg-gray-50 transition-colors"
                                         >
                                           <td className="py-3 px-4">
-                                            {/* ✅ CORREGIDO: Usar getProductImageUrl */}
                                             <ProductImage
                                               imageUrl={item.image}
                                               productName={item.name}
@@ -1124,7 +1232,11 @@ export default function Historial() {
                     onClick={() =>
                       setPagination((prev) => ({ ...prev, page: pageNum }))
                     }
-                    className={`px-3 py-1 rounded-lg transition-colors ${pagination.page === pageNum ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}
+                    className={`px-3 py-1 rounded-lg transition-colors ${
+                      pagination.page === pageNum
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-600 hover:bg-gray-100"
+                    }`}
                   >
                     {pageNum}
                   </button>

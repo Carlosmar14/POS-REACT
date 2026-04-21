@@ -1,83 +1,176 @@
+// backend/src/routes/reports.routes.js
 import express from "express";
 import { pool } from "../config/db.js";
 import { verifyToken, requireRole } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// Helper para rangos de fecha
-const getDateRange = (period) => {
-  const now = new Date();
-  let start, end;
-  if (period === "weekly") {
-    start = new Date(now);
-    start.setDate(now.getDate() - now.getDay());
-    start.setHours(0, 0, 0, 0);
-    end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
-  } else if (period === "monthly") {
-    start = new Date(now.getFullYear(), now.getMonth(), 1);
-    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-  } else {
-    // daily
-    start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    end = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      23,
-      59,
-      59,
-      999,
-    );
-  }
-  return { start: start.toISOString(), end: end.toISOString() };
+// Helper para estandarizar fechas a inicio y fin del día (UTC)
+const normalizeDateRange = (startStr, endStr) => {
+  if (!startStr || !endStr) return { start: null, end: null };
+  const start = new Date(startStr);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(endStr);
+  end.setUTCHours(23, 59, 59, 999);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
 };
 
-// GET: Reporte Global (Admin)
+// Helper para construir cláusula WHERE con filtros
+const buildWhereClause = (
+  start,
+  end,
+  paymentMethod,
+  cashierId,
+  userIdForNonAdmin,
+) => {
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+
+  if (start && end) {
+    conditions.push(`s.created_at >= $${idx}::timestamp`);
+    values.push(start);
+    idx++;
+    conditions.push(`s.created_at <= $${idx}::timestamp`);
+    values.push(end);
+    idx++;
+  }
+
+  if (paymentMethod) {
+    conditions.push(`s.payment_method = $${idx}`);
+    values.push(paymentMethod);
+    idx++;
+  }
+
+  if (cashierId) {
+    conditions.push(`s.user_id = $${idx}::uuid`);
+    values.push(cashierId);
+    idx++;
+  }
+
+  if (userIdForNonAdmin) {
+    conditions.push(`s.user_id = $${idx}::uuid`);
+    values.push(userIdForNonAdmin);
+    idx++;
+  }
+
+  conditions.push(`s.status = 'completed'`);
+
+  const whereClause =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return { whereClause, values };
+};
+
+// Helper para obtener rango de fechas según período rápido
+const getDateRange = (period) => {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+
+  if (period === "weekly") {
+    start.setDate(now.getDate() - 7);
+    start.setUTCHours(0, 0, 0, 0);
+    end.setUTCHours(23, 59, 59, 999);
+  } else if (period === "monthly") {
+    start.setMonth(now.getMonth() - 1);
+    start.setUTCHours(0, 0, 0, 0);
+    end.setUTCHours(23, 59, 59, 999);
+  } else {
+    // daily (HOY)
+    start.setUTCHours(0, 0, 0, 0);
+    end.setUTCHours(23, 59, 59, 999);
+  }
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
+};
+
+// ============================================================================
+// GET /dashboard - Reporte Global (Admin)
+// ============================================================================
 router.get(
   "/dashboard",
   verifyToken,
   requireRole("admin"),
   async (req, res) => {
     try {
-      const { period = "daily" } = req.query;
-      const { start, end } = getDateRange(period);
+      const {
+        period = "daily",
+        start: customStart,
+        end: customEnd,
+        paymentMethod,
+        cashierId,
+      } = req.query;
 
-      // 1. Totales globales del período
-      const global = await pool.query(
-        `
-      SELECT COUNT(*)::int as total_sales, 
-             COALESCE(SUM(total),0)::float as total_revenue,
-             COALESCE(SUM(CASE WHEN payment_method='cash' THEN total ELSE 0 END),0)::float as cash_total,
-             COALESCE(SUM(CASE WHEN payment_method='card' THEN total ELSE 0 END),0)::float as card_total
-      FROM sales WHERE created_at >= $1::timestamp AND created_at <= $2::timestamp AND status = 'completed'
-    `,
-        [start, end],
+      let start, end;
+      if (customStart && customEnd) {
+        const normalized = normalizeDateRange(customStart, customEnd);
+        start = normalized.start;
+        end = normalized.end;
+      } else {
+        const range = getDateRange(period);
+        start = range.start;
+        end = range.end;
+      }
+
+      const { whereClause, values } = buildWhereClause(
+        start,
+        end,
+        paymentMethod,
+        cashierId,
       );
 
-      // 2. Desempeño por cajera
-      const byCashier = await pool.query(
-        `
-      SELECT u.name as cashier_name, u.email,
-             COUNT(s.id)::int as total_sales,
-             COALESCE(SUM(s.total),0)::float as total_collected
-      FROM users u JOIN sales s ON u.id = s.user_id
-      WHERE s.created_at >= $1::timestamp AND s.created_at <= $2::timestamp AND s.status = 'completed'
-      GROUP BY u.id, u.name, u.email ORDER BY total_collected DESC
-    `,
-        [start, end],
-      );
+      // 1. Totales globales (incluyendo transferencia)
+      const globalQuery = `
+        SELECT 
+          COUNT(*)::int as total_sales, 
+          COALESCE(SUM(total),0)::float as total_revenue,
+          COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total ELSE 0 END),0)::float as cash_total,
+          COALESCE(SUM(CASE WHEN payment_method = 'card' THEN total ELSE 0 END),0)::float as card_total,
+          COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN total ELSE 0 END),0)::float as transfer_total
+        FROM sales s
+        ${whereClause}
+      `;
+      const global = await pool.query(globalQuery, values);
 
-      // 3. Últimas 10 ventas
-      const last10 = await pool.query(`
-      SELECT s.id, s.total::float, s.payment_method, s.created_at, u.name as cashier_name,
-             (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id)::int as items_count
-      FROM sales s LEFT JOIN users u ON s.user_id = u.id
-      WHERE s.status = 'completed' ORDER BY s.created_at DESC LIMIT 10
-    `);
+      // 2. Desempeño por cajero
+      const byCashierQuery = `
+        SELECT 
+          u.id as cashier_id,
+          u.name as cashier_name, 
+          u.email,
+          COUNT(s.id)::int as total_sales,
+          COALESCE(SUM(s.total),0)::float as total_collected
+        FROM users u 
+        JOIN sales s ON u.id = s.user_id
+        ${whereClause}
+        GROUP BY u.id, u.name, u.email 
+        ORDER BY total_collected DESC
+      `;
+      const byCashier = await pool.query(byCashierQuery, values);
 
-      // ✅ CORREGIDO: Se agregó explícitamente la clave "data:"
+      // 3. Últimas ventas (limitadas a 10)
+      const lastSalesQuery = `
+        SELECT 
+          s.id, 
+          s.total::float, 
+          s.payment_method, 
+          s.created_at, 
+          u.name as cashier_name,
+          (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id)::int as items_count
+        FROM sales s 
+        LEFT JOIN users u ON s.user_id = u.id
+        ${whereClause}
+        ORDER BY s.created_at DESC 
+        LIMIT 10
+      `;
+      const lastSales = await pool.query(lastSalesQuery, values);
+
       res.json({
         success: true,
         data: {
@@ -85,7 +178,7 @@ router.get(
           range: { start, end },
           summary: global.rows[0],
           by_cashier: byCashier.rows,
-          last_10: last10.rows,
+          last_10: lastSales.rows,
         },
       });
     } catch (err) {
@@ -95,24 +188,30 @@ router.get(
   },
 );
 
-// GET: Stats personales de la cajera (HOY)
+// ============================================================================
+// GET /my-stats - Stats personales de la cajera (HOY)
+// ============================================================================
 router.get("/my-stats", verifyToken, async (req, res) => {
   try {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    const userId = req.user.id || req.user.userId;
+    const range = getDateRange("daily");
+    const { whereClause, values } = buildWhereClause(
+      range.start,
+      range.end,
+      null,
+      null,
+      userId,
+    );
 
     const stats = await pool.query(
       `
       SELECT COUNT(*)::int as total_sales, COALESCE(SUM(total),0)::float as total_collected
-      FROM sales
-      WHERE user_id = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp AND status = 'completed'
+      FROM sales s
+      ${whereClause}
     `,
-      [req.user.id, todayStart.toISOString(), todayEnd.toISOString()],
+      values,
     );
 
-    // ✅ CORREGIDO: Se agregó explícitamente la clave "data:"
     res.json({ success: true, data: stats.rows[0] });
   } catch (err) {
     console.error("❌ Error stats cajera:", err);

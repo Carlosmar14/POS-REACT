@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import api from "../api";
 import Swal from "sweetalert2";
 import Barcode from "react-barcode";
+import LoaderPOS from "../components/LoaderPOS";
 import {
   Plus,
   Edit,
@@ -268,13 +269,9 @@ export default function Productos() {
       p?.sku?.toLowerCase().includes(search),
   );
 
+  // ✅ Reemplazamos el spinner manual por LoaderPOS
   if (loading && products.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="spinner" />
-        <span className="ml-3 text-gray-500">Cargando productos...</span>
-      </div>
-    );
+    return <LoaderPOS message="Cargando productos..." />;
   }
 
   // ✅ MODAL ESTILO SWEETALERT2

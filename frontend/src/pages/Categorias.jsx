@@ -1,7 +1,8 @@
 // frontend/src/pages/Categorias.jsx
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import api from "../api";
 import Swal from "sweetalert2";
+import LoaderPOS from "../components/LoaderPOS"; // ✅ Importamos tu componente
 import {
   Plus,
   Edit,
@@ -11,10 +12,91 @@ import {
   AlertTriangle,
   Search,
   Tag,
-  Layers,
   ChevronRight,
-  TrendingUp,
+  Layers,
+  // Íconos para categorías
+  Apple,
+  GlassWater,
+  SprayCan,
+  HeartPulse,
+  Hammer,
+  Cog,
+  Smartphone,
+  PenLine,
+  Blocks,
+  Dog,
+  ShoppingBag,
+  Shirt,
+  Snowflake,
+  Croissant,
+  Milk,
+  Ham,
+  Carrot,
+  Wheat,
+  Sparkles,
+  Pill,
+  Wrench,
+  Lightbulb,
+  Palette,
+  Sprout,
+  // Extras
+  Coffee,
+  Pizza,
+  Utensils,
+  Laptop,
+  Home,
+  Car,
+  Book,
+  Gamepad2,
+  Music,
+  Camera,
+  Gift,
+  Store,
+  Grid,
 } from "lucide-react";
+
+const ICON_OPTIONS = {
+  Apple,
+  GlassWater,
+  SprayCan,
+  HeartPulse,
+  Hammer,
+  Cog,
+  Smartphone,
+  PenLine,
+  Blocks,
+  Dog,
+  ShoppingBag,
+  Shirt,
+  Snowflake,
+  Croissant,
+  Milk,
+  Ham,
+  Carrot,
+  Wheat,
+  Sparkles,
+  Pill,
+  Wrench,
+  Lightbulb,
+  Palette,
+  Sprout,
+  Tag,
+  Package,
+  Coffee,
+  Pizza,
+  Utensils,
+  Laptop,
+  Home,
+  Car,
+  Book,
+  Gamepad2,
+  Music,
+  Camera,
+  Gift,
+  Store,
+  Grid,
+};
+const ICON_NAMES = Object.keys(ICON_OPTIONS);
 
 export default function Categorias() {
   const [categories, setCategories] = useState([]);
@@ -22,11 +104,25 @@ export default function Categorias() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", description: "" });
+  const [form, setForm] = useState({ name: "", description: "", icon: "Tag" });
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showIconPicker, setShowIconPicker] = useState(false);
+  const iconPickerRef = useRef(null);
 
-  // ✅ Cargar categorías y productos para contar
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (
+        iconPickerRef.current &&
+        !iconPickerRef.current.contains(event.target)
+      ) {
+        setShowIconPicker(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -35,7 +131,6 @@ export default function Categorias() {
     setLoading(true);
     setError(null);
     try {
-      // Cargar categorías
       const [catRes, prodRes] = await Promise.all([
         api.get("/categories"),
         api.get("/products"),
@@ -50,7 +145,6 @@ export default function Categorias() {
     }
   };
 
-  // ✅ Calcular productos por categoría (memoizado para rendimiento)
   const productsByCategory = useMemo(() => {
     const counts = {};
     products.forEach((p) => {
@@ -62,7 +156,10 @@ export default function Categorias() {
     return counts;
   }, [products]);
 
-  // ✅ Filtrar categorías por búsqueda
+  const totalActiveProducts = useMemo(() => {
+    return products.filter((p) => p.is_active !== false).length;
+  }, [products]);
+
   const filteredCategories = useMemo(() => {
     if (!searchTerm.trim()) return categories;
     const term = searchTerm.toLowerCase();
@@ -73,7 +170,6 @@ export default function Categorias() {
     );
   }, [categories, searchTerm]);
 
-  // ✅ Colores dinámicos para categorías
   const getCategoryColor = (index) => {
     const colors = [
       "from-blue-500 to-blue-600",
@@ -92,10 +188,15 @@ export default function Categorias() {
     setEditing(cat);
     setForm(
       cat
-        ? { name: cat.name, description: cat.description || "" }
-        : { name: "", description: "" },
+        ? {
+            name: cat.name,
+            description: cat.description || "",
+            icon: cat.icon || "Tag",
+          }
+        : { name: "", description: "", icon: "Tag" },
     );
     setModal(true);
+    setShowIconPicker(false);
   };
 
   const handleSubmit = async (e) => {
@@ -103,29 +204,28 @@ export default function Categorias() {
     setError(null);
 
     try {
+      const payload = { ...form };
       if (editing) {
-        await api.put(`/categories/${editing.id}`, form);
+        await api.put(`/categories/${editing.id}`, payload);
         setModal(false);
         await loadData();
         Swal.fire({
           title: "¡Categoría actualizada!",
           text: `"${form.name}" se ha actualizado correctamente.`,
           icon: "success",
-          showConfirmButton: false,
           timer: 2000,
-          timerProgressBar: true,
+          showConfirmButton: false,
         });
       } else {
-        await api.post("/categories", form);
+        await api.post("/categories", payload);
         setModal(false);
         await loadData();
         Swal.fire({
           title: "¡Categoría creada!",
           text: `"${form.name}" se ha creado correctamente.`,
           icon: "success",
-          showConfirmButton: false,
           timer: 2000,
-          timerProgressBar: true,
+          showConfirmButton: false,
         });
       }
     } catch (err) {
@@ -136,15 +236,13 @@ export default function Categorias() {
   const handleDelete = async (id, name) => {
     const result = await Swal.fire({
       title: "¿Desactivar categoría?",
-      text: `¿Estás seguro de que deseas desactivar "${name}"? Los productos asociados quedarán sin categoría.`,
+      text: `¿Estás seguro de que deseas desactivar "${name}"?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#dc3545",
       cancelButtonColor: "#6c757d",
       confirmButtonText: "Sí, desactivar",
-      cancelButtonText: "Cancelar",
     });
-
     if (!result.isConfirmed) return;
 
     try {
@@ -152,49 +250,42 @@ export default function Categorias() {
       await loadData();
       Swal.fire({
         title: "¡Categoría desactivada!",
-        text: `"${name}" ha sido desactivada correctamente.`,
+        text: `"${name}" ha sido desactivada.`,
         icon: "success",
-        showConfirmButton: false,
         timer: 2000,
-        timerProgressBar: true,
+        showConfirmButton: false,
       });
     } catch (err) {
-      Swal.fire({
-        title: "Error",
-        text: err.response?.data?.message || "Error al desactivar categoría",
-        icon: "error",
-        confirmButtonColor: "#dc3545",
-        confirmButtonText: "Aceptar",
-      });
+      Swal.fire(
+        "Error",
+        err.response?.data?.message || "Error al desactivar",
+        "error",
+      );
     }
   };
 
-  // ✅ Componente de tarjeta de categoría mejorada
   const CategoryCard = ({ cat, index }) => {
     const productCount = productsByCategory[cat.id] || 0;
     const colorClass = getCategoryColor(index);
-    const firstLetter = cat.name?.charAt(0).toUpperCase() || "?";
+    const IconComponent = ICON_OPTIONS[cat.icon] || Tag;
 
     return (
-      <div className="group relative bg-white rounded-2xl border-2 border-gray-100 shadow-sm hover:shadow-xl hover:border-blue-300 transition-all duration-300 overflow-hidden">
-        {/* Barra de color superior */}
+      <div className="group relative bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-xl hover:border-blue-300 dark:hover:border-blue-600 transition-all duration-300 overflow-hidden">
         <div className={`h-1.5 bg-gradient-to-r ${colorClass}`} />
-
         <div className="p-5">
-          {/* Header con icono y nombre */}
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center gap-3">
               <div
-                className={`w-12 h-12 bg-gradient-to-br ${colorClass} rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-md group-hover:scale-110 transition-transform`}
+                className={`w-12 h-12 bg-gradient-to-br ${colorClass} rounded-xl flex items-center justify-center text-white shadow-md group-hover:scale-110 transition-transform`}
               >
-                {firstLetter}
+                <IconComponent size={22} />
               </div>
               <div>
-                <h3 className="font-bold text-gray-900 text-lg leading-tight">
+                <h3 className="font-bold text-gray-900 dark:text-white text-lg leading-tight">
                   {cat.name}
                 </h3>
                 {cat.description && (
-                  <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-1">
                     {cat.description}
                   </p>
                 )}
@@ -202,14 +293,15 @@ export default function Categorias() {
             </div>
           </div>
 
-          {/* Stats: Productos */}
-          <div className="flex items-center gap-2 mb-4 p-3 bg-gray-50 rounded-xl">
-            <div className="p-2 bg-white rounded-lg shadow-sm">
-              <Package size={16} className="text-blue-600" />
+          <div className="flex items-center gap-2 mb-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+            <div className="p-2 bg-white dark:bg-gray-600 rounded-lg shadow-sm">
+              <Package size={16} className="text-blue-600 dark:text-blue-400" />
             </div>
             <div>
-              <p className="text-xs text-gray-500">Productos activos</p>
-              <p className="text-lg font-bold text-gray-900">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Productos activos
+              </p>
+              <p className="text-lg font-bold text-gray-900 dark:text-white">
                 {productCount}{" "}
                 <span className="text-xs font-normal text-gray-400">
                   {productCount === 1 ? "producto" : "productos"}
@@ -218,79 +310,52 @@ export default function Categorias() {
             </div>
           </div>
 
-          {/* Badge de estado */}
-          <div className="flex items-center gap-2 mb-4">
-            <span
-              className={`px-2.5 py-1 text-xs font-medium rounded-full ${
-                cat.is_active !== false
-                  ? "bg-green-100 text-green-700"
-                  : "bg-red-100 text-red-700"
-              }`}
-            >
-              {cat.is_active !== false ? "● Activa" : "○ Inactiva"}
-            </span>
-            <span className="text-xs text-gray-400 font-mono">
-              ID: {cat.id?.slice(0, 6)}...
-            </span>
-          </div>
-
-          {/* Acciones */}
-          <div className="flex gap-2 pt-3 border-t border-gray-100">
+          <div className="flex gap-2 pt-3 border-t border-gray-100 dark:border-gray-700">
             <button
               onClick={() => openModal(cat)}
-              className="flex-1 py-2.5 px-3 bg-blue-50 text-blue-700 rounded-xl hover:bg-blue-100 transition-colors flex items-center justify-center gap-1.5 text-sm font-medium"
+              className="flex-1 py-2.5 px-3 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 rounded-xl hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors flex items-center justify-center gap-1.5 text-sm font-medium"
             >
               <Edit size={14} /> Editar
             </button>
             <button
               onClick={() => handleDelete(cat.id, cat.name)}
-              className="flex-1 py-2.5 px-3 bg-red-50 text-red-700 rounded-xl hover:bg-red-100 transition-colors flex items-center justify-center gap-1.5 text-sm font-medium"
+              className="flex-1 py-2.5 px-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded-xl hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors flex items-center justify-center gap-1.5 text-sm font-medium"
             >
               <Trash2 size={14} /> Eliminar
             </button>
           </div>
         </div>
-
-        {/* Hover indicator */}
         <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
           <ChevronRight
             size={16}
-            className="text-gray-400 group-hover:text-blue-500"
+            className="text-gray-400 dark:text-gray-500 group-hover:text-blue-500 dark:group-hover:text-blue-400"
           />
         </div>
       </div>
     );
   };
 
+  // ✅ Reemplazamos el spinner manual por LoaderPOS
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-64">
-        <div className="relative">
-          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-500 rounded-full animate-spin" />
-          <Layers
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-blue-500"
-            size={20}
-          />
-        </div>
-        <span className="text-gray-500 mt-4 font-medium">
-          Cargando categorías...
-        </span>
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <LoaderPOS message="Cargando categorías..." />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Header mejorado */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Tag className="text-blue-600" size={28} />
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Tag className="text-blue-600 dark:text-blue-400" size={28} />
             Gestión de Categorías
           </h1>
-          <p className="text-gray-500 text-sm mt-1">
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
             Organiza tus productos por grupos •{" "}
-            <span className="font-medium text-blue-600">
+            <span className="font-medium text-blue-600 dark:text-blue-400">
               {categories.length} categorías
             </span>
           </p>
@@ -304,10 +369,10 @@ export default function Categorias() {
       </div>
 
       {/* Barra de búsqueda */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4">
         <div className="relative">
           <Search
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
             size={18}
           />
           <input
@@ -315,12 +380,12 @@ export default function Categorias() {
             placeholder="Buscar categoría por nombre o descripción..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-11 pr-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+            className="w-full pl-11 pr-4 py-2.5 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all"
           />
           {searchTerm && (
             <button
               onClick={() => setSearchTerm("")}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
             >
               <X size={16} />
             </button>
@@ -330,58 +395,56 @@ export default function Categorias() {
 
       {/* Error global */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3 text-red-700">
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 flex items-center gap-3 text-red-700 dark:text-red-400">
           <AlertTriangle size={20} />
           <span className="text-sm font-medium">{error}</span>
           <button
             onClick={() => setError(null)}
-            className="ml-auto text-red-400 hover:text-red-600"
+            className="ml-auto text-red-400 dark:text-red-500 hover:text-red-600 dark:hover:text-red-300"
           >
             <X size={18} />
           </button>
         </div>
       )}
 
-      {/* Stats resumen */}
+      {/* Stats resumen - SOLO 2 TARJETAS: Total Categorías y Total de Productos */}
       {categories.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-4 border border-blue-200">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-white rounded-lg shadow-sm">
-                <Layers size={20} className="text-blue-600" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          {/* Total Categorías */}
+          <div className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20 rounded-2xl p-6 border border-blue-200 dark:border-blue-800 shadow-sm">
+            <div className="flex items-center gap-5">
+              <div className="p-4 bg-white dark:bg-gray-800 rounded-xl shadow-md">
+                <Layers
+                  size={36}
+                  className="text-blue-600 dark:text-blue-400"
+                />
               </div>
               <div>
-                <p className="text-xs text-blue-600 font-medium">Total</p>
-                <p className="text-2xl font-bold text-gray-900">
+                <p className="text-sm font-medium text-blue-700 dark:text-blue-300 uppercase tracking-wide">
+                  Total Categorías
+                </p>
+                <p className="text-5xl font-extrabold text-gray-900 dark:text-white mt-1">
                   {categories.length}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-4 border border-green-200">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-white rounded-lg shadow-sm">
-                <TrendingUp size={20} className="text-green-600" />
+
+          {/* Total de Productos */}
+          <div className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-800/20 rounded-2xl p-6 border border-purple-200 dark:border-purple-800 shadow-sm">
+            <div className="flex items-center gap-5">
+              <div className="p-4 bg-white dark:bg-gray-800 rounded-xl shadow-md">
+                <Package
+                  size={36}
+                  className="text-purple-600 dark:text-purple-400"
+                />
               </div>
               <div>
-                <p className="text-xs text-green-600 font-medium">Activas</p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {categories.filter((c) => c.is_active !== false).length}
+                <p className="text-sm font-medium text-purple-700 dark:text-purple-300 uppercase tracking-wide">
+                  Total de Productos
                 </p>
-              </div>
-            </div>
-          </div>
-          <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-4 border border-purple-200">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-white rounded-lg shadow-sm">
-                <Package size={20} className="text-purple-600" />
-              </div>
-              <div>
-                <p className="text-xs text-purple-600 font-medium">
-                  Productos totales
-                </p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {products.filter((p) => p.is_active !== false).length}
+                <p className="text-5xl font-extrabold text-gray-900 dark:text-white mt-1">
+                  {totalActiveProducts}
                 </p>
               </div>
             </div>
@@ -391,16 +454,16 @@ export default function Categorias() {
 
       {/* Grid de Categorías */}
       {filteredCategories.length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-12 text-center">
-          <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Package className="text-gray-400" size={32} />
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-12 text-center">
+          <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Package className="text-gray-400 dark:text-gray-500" size={32} />
           </div>
-          <h3 className="text-lg font-semibold text-gray-900">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
             {searchTerm
               ? "No se encontraron categorías"
               : "No hay categorías registradas"}
           </h3>
-          <p className="text-gray-500 mt-1 mb-6">
+          <p className="text-gray-500 dark:text-gray-400 mt-1 mb-6">
             {searchTerm
               ? "Intenta con otro término de búsqueda"
               : "Crea tu primera categoría para organizar tus productos"}
@@ -422,15 +485,14 @@ export default function Categorias() {
         </div>
       )}
 
-      {/* Modal Crear/Editar - Diseño mejorado */}
+      {/* Modal */}
       {modal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/40 dark:bg-black/60 backdrop-blur-sm"
             onClick={() => setModal(false)}
           />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            {/* Header del modal */}
+          <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
             <div className="bg-gradient-to-r from-blue-600 to-blue-700 p-5 text-white">
               <div className="flex justify-between items-center">
                 <h2 className="text-lg font-bold flex items-center gap-2">
@@ -448,18 +510,78 @@ export default function Categorias() {
 
             <form onSubmit={handleSubmit} className="p-5 space-y-4">
               {error && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-center gap-2">
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-700 dark:text-red-400 text-sm flex items-center gap-2">
                   <AlertTriangle size={16} />
                   {error}
                 </div>
               )}
 
+              {/* Selector de Icono */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Icono
+                </label>
+                <div className="relative" ref={iconPickerRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowIconPicker(!showIconPicker)}
+                    className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex items-center justify-between hover:border-blue-400 transition-all"
+                  >
+                    <span className="flex items-center gap-2">
+                      {(() => {
+                        const IconComponent = ICON_OPTIONS[form.icon] || Tag;
+                        return <IconComponent size={18} />;
+                      })()}
+                      <span>{form.icon}</span>
+                    </span>
+                    <ChevronRight
+                      size={16}
+                      className={`transform transition-transform ${showIconPicker ? "rotate-90" : ""}`}
+                    />
+                  </button>
+
+                  {showIconPicker && (
+                    <div className="absolute z-10 mt-1 w-80 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl shadow-lg max-h-64 overflow-y-auto p-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">
+                        Categorías
+                      </p>
+                      <div className="grid grid-cols-5 gap-1">
+                        {ICON_NAMES.map((iconName) => {
+                          const IconComponent = ICON_OPTIONS[iconName];
+                          return (
+                            <button
+                              key={iconName}
+                              type="button"
+                              onClick={() => {
+                                setForm({ ...form, icon: iconName });
+                                setShowIconPicker(false);
+                              }}
+                              className={`p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 flex flex-col items-center transition-colors ${
+                                form.icon === iconName
+                                  ? "bg-blue-100 dark:bg-blue-900/30 ring-2 ring-blue-500"
+                                  : ""
+                              }`}
+                              title={iconName}
+                            >
+                              <IconComponent size={22} />
+                              <span className="text-[10px] mt-0.5 text-gray-600 dark:text-gray-300 truncate w-full text-center">
+                                {iconName}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                   Nombre de la categoría *
                 </label>
                 <input
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                  className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="Ej: Bebidas, Limpieza, Electrónica..."
@@ -469,11 +591,11 @@ export default function Categorias() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                   Descripción (opcional)
                 </label>
                 <textarea
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none"
+                  className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all resize-none"
                   rows="3"
                   value={form.description}
                   onChange={(e) =>
@@ -483,12 +605,16 @@ export default function Categorias() {
                 />
               </div>
 
-              {/* Preview del badge */}
               {form.name && (
-                <div className="p-3 bg-gray-50 rounded-xl">
-                  <p className="text-xs text-gray-500 mb-2">Vista previa:</p>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
-                    <Tag size={14} />
+                <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Vista previa:
+                  </p>
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-full text-sm font-medium">
+                    {(() => {
+                      const IconComponent = ICON_OPTIONS[form.icon] || Tag;
+                      return <IconComponent size={14} />;
+                    })()}
                     {form.name}
                   </span>
                 </div>
@@ -504,7 +630,7 @@ export default function Categorias() {
                 <button
                   type="button"
                   onClick={() => setModal(false)}
-                  className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-xl hover:bg-gray-50 transition-colors font-medium"
+                  className="px-6 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors font-medium"
                 >
                   Cancelar
                 </button>

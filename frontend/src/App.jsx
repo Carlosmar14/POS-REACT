@@ -6,7 +6,7 @@ import { ConfigProvider } from "./context/ConfigContext";
 import { useSessionTimeout } from "./hooks/useSessionTimeout";
 import { useState, useEffect, useRef } from "react";
 import api from "./api";
-import { Loader2 } from "lucide-react";
+import LoaderPOS from "./components/LoaderPOS"; // ✅ Importamos tu componente
 
 // Páginas
 import Activacion from "./pages/Activacion";
@@ -43,7 +43,7 @@ const LicenseGuard = ({ children }) => {
   if (status.loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <Loader2 className="animate-spin text-blue-600" size={48} />
+        <LoaderPOS message="Verificando licencia..." />
       </div>
     );
   }

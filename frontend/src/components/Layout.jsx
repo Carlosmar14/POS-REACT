@@ -24,6 +24,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+import LoaderPOS from "./LoaderPOS"; // ✅ Importamos tu componente
 
 export default function Layout() {
   const { user, logout } = useAuth();
@@ -169,9 +170,9 @@ export default function Layout() {
 
         <div className="max-h-96 overflow-y-auto">
           {loading ? (
-            <div className="p-4 text-center text-gray-500 dark:text-gray-400">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500 mx-auto mb-2"></div>
-              Cargando...
+            // ✅ Reemplazamos el spinner manual por tu LoaderPOS
+            <div className="p-4">
+              <LoaderPOS message="Cargando notificaciones..." />
             </div>
           ) : notifications.length === 0 ? (
             <div className="p-8 text-center text-gray-400 dark:text-gray-500">

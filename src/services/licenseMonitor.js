@@ -1,4 +1,4 @@
-// src/services/licenseMonitor.js
+// backend/src/services/licenseMonitor.js
 import { checkSystemLicense } from "./licenseService.js";
 
 let licenseStatus = {
@@ -7,12 +7,12 @@ let licenseStatus = {
   lastCheck: null,
 };
 
-// ✅ Inicializar el estado inmediatamente (sincrónico no, pero se llama en start)
-export const initializeLicenseMonitor = async () => {
+// ✅ Actualizar estado inmediatamente y luego cada 5 minutos
+export const startLicenseMonitor = async () => {
   await updateLicenseStatus();
+  setInterval(updateLicenseStatus, 5 * 60 * 1000);
 };
 
-// ✅ Actualizar estado
 export const updateLicenseStatus = async () => {
   try {
     const result = await checkSystemLicense();
@@ -24,6 +24,9 @@ export const updateLicenseStatus = async () => {
 
     if (!result.valid) {
       console.warn(`⚠️ Licencia inválida: ${result.reason}`);
+      if (result.reason === "clock_tampered") {
+        console.error("🔴 BLOQUEO POR MANIPULACIÓN DE FECHA");
+      }
     } else {
       console.log(
         `✅ Licencia activa. Cliente: ${result.data?.customerName}, Días restantes: ${result.data?.daysLeft}`,
@@ -32,13 +35,6 @@ export const updateLicenseStatus = async () => {
   } catch (err) {
     console.error("❌ Error en monitor de licencia:", err);
   }
-};
-
-// ✅ Iniciar monitor periódico
-export const startLicenseMonitor = () => {
-  // Actualizar ya (no esperar al intervalo)
-  updateLicenseStatus();
-  setInterval(updateLicenseStatus, 5 * 60 * 1000);
 };
 
 // ✅ Obtener estado actual (cache)

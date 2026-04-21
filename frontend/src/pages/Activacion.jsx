@@ -1,5 +1,5 @@
 // frontend/src/pages/Activacion.jsx
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import Swal from "sweetalert2";
@@ -20,35 +20,20 @@ export default function Activacion() {
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [licenseStatus, setLicenseStatus] = useState(null);
-  const timeoutRef = useRef(null);
-  const verifiedRef = useRef(false);
 
   useEffect(() => {
-    // Evitar múltiples verificaciones en React StrictMode
-    if (verifiedRef.current) return;
-    verifiedRef.current = true;
-
     checkLicenseStatus();
-
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
   }, []);
 
   const checkLicenseStatus = async () => {
     try {
       const res = await api.get("/license/status");
       setLicenseStatus(res.data.data);
-
-      // Solo redirigir si la licencia es válida y NO estamos ya en /login
-      if (res.data.data?.valid && window.location.pathname !== "/login") {
-        timeoutRef.current = setTimeout(() => {
-          navigate("/login");
-        }, 1500);
+      if (res.data.data.valid) {
+        setTimeout(() => navigate("/login"), 2000);
       }
     } catch (err) {
       console.error("Error verificando licencia:", err);
-      setLicenseStatus({ valid: false, reason: "error" });
     } finally {
       setChecking(false);
     }
@@ -57,16 +42,26 @@ export default function Activacion() {
   const handleActivate = async (e) => {
     e.preventDefault();
 
-    if (!licenseToken.trim()) {
+    // ✅ Limpieza agresiva del token
+    const cleanedToken = licenseToken
+      .replace(/[\s\n\r\t\u00A0]/g, "") // Eliminar todos los espacios y caracteres invisibles
+      .trim();
+
+    if (!cleanedToken) {
       return Swal.fire("Error", "Ingresa el token de licencia", "warning");
     }
+
+    console.log(
+      "📤 Enviando token limpio:",
+      cleanedToken.substring(0, 30) + "...",
+    );
 
     setLoading(true);
 
     try {
       const res = await api.post("/license/activate", {
-        licenseToken: licenseToken.trim().toUpperCase(),
-        customerName: customerName.trim() || "Cliente",
+        licenseToken: cleanedToken,
+        customerName: customerName.trim() || null,
       });
 
       if (res.data.success) {
@@ -84,7 +79,6 @@ export default function Activacion() {
           icon: "success",
         });
 
-        // Redirigir después de éxito
         navigate("/login");
       }
     } catch (err) {
@@ -106,7 +100,6 @@ export default function Activacion() {
     );
   }
 
-  // Si ya tiene licencia válida, mostrar mensaje de bienvenida
   if (licenseStatus?.valid) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4">
@@ -190,16 +183,19 @@ export default function Activacion() {
                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 size={20}
               />
-              <input
-                type="text"
+              <textarea
                 value={licenseToken}
                 onChange={(e) => setLicenseToken(e.target.value)}
                 placeholder="Pega el token completo aquí"
-                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                className="w-full pl-12 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 font-mono text-xs resize-none"
+                rows={4}
                 autoFocus
                 disabled={loading}
               />
             </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Asegúrate de copiar el token completo, sin espacios adicionales
+            </p>
           </div>
 
           <button

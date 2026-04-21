@@ -1,14 +1,25 @@
+// backend/src/routes/categories.routes.js
 import express from "express";
 import { pool } from "../config/db.js";
 import { verifyToken, requireRole } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// ✅ GET: Obtener categorías activas
+// ✅ GET: Obtener categorías activas (incluye campo icon)
 router.get("/", verifyToken, async (req, res) => {
   try {
-    const sql =
-      "SELECT id, name, COALESCE(description, '') as description, COALESCE(is_active, true) as is_active, created_at FROM categories WHERE COALESCE(is_active, true) = true ORDER BY name ASC";
+    const sql = `
+      SELECT 
+        id, 
+        name, 
+        COALESCE(description, '') as description, 
+        COALESCE(icon, 'Tag') as icon,
+        COALESCE(is_active, true) as is_active, 
+        created_at 
+      FROM categories 
+      WHERE COALESCE(is_active, true) = true 
+      ORDER BY name ASC
+    `;
 
     const result = await pool.query(sql);
     res.json({ success: true, data: result.rows });
@@ -18,11 +29,12 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
-// ✅ POST: Crear categoría (MEJORADO - permite reactivar)
+// ✅ POST: Crear categoría (con icono)
 router.post("/", verifyToken, requireRole("admin"), async (req, res) => {
   try {
     const name = req.body.name;
     const description = req.body.description || null;
+    const icon = req.body.icon || "Tag";
 
     if (!name || name.trim().length < 2) {
       return res
@@ -51,8 +63,11 @@ router.post("/", verifyToken, requireRole("admin"), async (req, res) => {
         // Si existe pero está inactiva, la reactivamos
         console.log(`🔄 Reactivando categoría existente: ${cleanName}`);
         const result = await pool.query(
-          "UPDATE categories SET description = $1, is_active = true WHERE id = $2 RETURNING id, name, COALESCE(description, '') as description, is_active, created_at",
-          [description, category.id],
+          `UPDATE categories 
+           SET description = $1, icon = $2, is_active = true 
+           WHERE id = $3 
+           RETURNING id, name, COALESCE(description, '') as description, COALESCE(icon, 'Tag') as icon, is_active, created_at`,
+          [description, icon, category.id],
         );
 
         return res.status(200).json({
@@ -64,10 +79,13 @@ router.post("/", verifyToken, requireRole("admin"), async (req, res) => {
     }
 
     // Si no existe, crear nueva
-    const sql =
-      "INSERT INTO categories (name, description, is_active) VALUES ($1, $2, true) RETURNING id, name, COALESCE(description, '') as description, is_active, created_at";
+    const sql = `
+      INSERT INTO categories (name, description, icon, is_active) 
+      VALUES ($1, $2, $3, true) 
+      RETURNING id, name, COALESCE(description, '') as description, COALESCE(icon, 'Tag') as icon, is_active, created_at
+    `;
 
-    const result = await pool.query(sql, [cleanName, description]);
+    const result = await pool.query(sql, [cleanName, description, icon]);
 
     res.status(201).json({
       success: true,
@@ -84,13 +102,17 @@ router.post("/", verifyToken, requireRole("admin"), async (req, res) => {
   }
 });
 
-// ✅ PUT: Actualizar categoría
+// ✅ PUT: Actualizar categoría (con icono)
 router.put("/:id", verifyToken, requireRole("admin"), async (req, res) => {
   try {
     const id = req.params.id;
-    const { name, description } = req.body;
+    const { name, description, icon } = req.body;
 
-    console.log(`🔄 Actualizando categoría UUID: ${id}`, { name, description });
+    console.log(`🔄 Actualizando categoría UUID: ${id}`, {
+      name,
+      description,
+      icon,
+    });
 
     if (!id || id.trim() === "") {
       return res.status(400).json({
@@ -125,12 +147,18 @@ router.put("/:id", verifyToken, requireRole("admin"), async (req, res) => {
       UPDATE categories 
       SET 
         name = $1, 
-        description = $2
-      WHERE id = $3 AND is_active = true 
-      RETURNING id, name, COALESCE(description, '') as description, is_active, created_at
+        description = $2,
+        icon = COALESCE($3, 'Tag')
+      WHERE id = $4 AND is_active = true 
+      RETURNING id, name, COALESCE(description, '') as description, COALESCE(icon, 'Tag') as icon, is_active, created_at
     `;
 
-    const result = await pool.query(sql, [cleanName, description || null, id]);
+    const result = await pool.query(sql, [
+      cleanName,
+      description || null,
+      icon || "Tag",
+      id,
+    ]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -156,7 +184,7 @@ router.put("/:id", verifyToken, requireRole("admin"), async (req, res) => {
   }
 });
 
-// ✅ DELETE: Desactivar categoría
+// ✅ DELETE: Desactivar categoría (sin cambios)
 router.delete("/:id", verifyToken, requireRole("admin"), async (req, res) => {
   try {
     const id = req.params.id;

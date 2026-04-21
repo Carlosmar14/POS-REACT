@@ -22,11 +22,13 @@ router.get("/", verifyToken, async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (err) {
     console.error("❌ Error GET /products:", err.message);
-    res.status(500).json({
-      success: false,
-      message: "Error al cargar productos",
-      detail: err.message,
-    });
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Error al cargar productos",
+        detail: err.message,
+      });
   }
 });
 
@@ -75,11 +77,13 @@ router.post(
       }
 
       const result = await pool.query(sql, values);
-      res.status(201).json({
-        success: true,
-        data: result.rows[0],
-        message: "Producto creado",
-      });
+      res
+        .status(201)
+        .json({
+          success: true,
+          data: result.rows[0],
+          message: "Producto creado",
+        });
     } catch (err) {
       console.error("❌ Error POST /products:", err);
       if (err.code === "23505")
@@ -91,7 +95,7 @@ router.post(
   },
 );
 
-// ✅ 3. PUT /:id/stock: Aumentar stock + Historial
+// ✅ 3. PUT /:id/stock: Ajustar stock (entrada/salida) - VERSIÓN CON DIAGNÓSTICO
 router.put(
   "/:id/stock",
   verifyToken,
@@ -99,68 +103,128 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { quantity, reason } = req.body;
-      const qty = parseInt(quantity);
-      // ✅ ID seguro del usuario
-      const userId = req.user?.id || req.user?.userId;
+      const { quantity, action, reason } = req.body;
 
-      if (!qty || qty <= 0) {
+      console.log("📦 [STOCK] Datos recibidos:", {
+        id,
+        quantity,
+        action,
+        reason,
+      });
+
+      // Validación estricta de cantidad
+      const qty = parseInt(quantity);
+      if (isNaN(qty) || qty <= 0) {
+        console.log("❌ [STOCK] Cantidad inválida:", quantity);
         return res
           .status(400)
-          .json({ success: false, message: "La cantidad debe ser mayor a 0" });
+          .json({
+            success: false,
+            message: "Cantidad debe ser un número mayor a 0",
+          });
       }
 
-      const client = await pool.connect();
+      // Validación de acción
+      if (action !== "increase" && action !== "decrease") {
+        console.log("❌ [STOCK] Acción inválida:", action);
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "Acción inválida (debe ser increase o decrease)",
+          });
+      }
+
+      // Obtener producto actual
+      const productRes = await pool.query(
+        "SELECT id, name, sku, stock FROM products WHERE id = $1::uuid AND is_active = true",
+        [id],
+      );
+
+      if (productRes.rows.length === 0) {
+        console.log("❌ [STOCK] Producto no encontrado:", id);
+        return res
+          .status(404)
+          .json({
+            success: false,
+            message: "Producto no encontrado o inactivo",
+          });
+      }
+
+      const product = productRes.rows[0];
+      const currentStock = parseInt(product.stock);
+      console.log(
+        `📊 [STOCK] Stock actual de ${product.name}: ${currentStock}`,
+      );
+
+      // Calcular nuevo stock
+      let newStock;
+      if (action === "increase") {
+        newStock = currentStock + qty;
+      } else {
+        if (currentStock < qty) {
+          console.log(
+            `❌ [STOCK] Stock insuficiente: actual ${currentStock}, solicitado ${qty}`,
+          );
+          return res
+            .status(400)
+            .json({
+              success: false,
+              message: "Stock insuficiente para realizar la salida",
+            });
+        }
+        newStock = currentStock - qty;
+      }
+
+      console.log(`✅ [STOCK] Nuevo stock calculado: ${newStock}`);
+
+      // Actualizar stock en la base de datos
+      const updateRes = await pool.query(
+        "UPDATE products SET stock = $1, updated_at = NOW() WHERE id = $2::uuid RETURNING stock",
+        [newStock, id],
+      );
+
+      console.log(
+        `💾 [STOCK] Stock actualizado en BD. Nuevo valor: ${updateRes.rows[0].stock}`,
+      );
+
+      // Intentar registrar movimiento sin que falle si la tabla no existe
       try {
-        await client.query("BEGIN");
-
-        const productRes = await client.query(
-          "SELECT id, name, sku, stock, sale_price, category_id FROM products WHERE id = $1::uuid AND is_active = true",
-          [id],
+        await pool.query(
+          `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by) 
+         VALUES ($1::uuid, $2, $3, $4, $5::uuid)`,
+          [
+            id,
+            qty,
+            action,
+            reason || "Ajuste manual",
+            req.user?.id || req.user?.userId,
+          ],
         );
-        if (productRes.rows.length === 0)
-          throw new Error("Producto no encontrado o inactivo");
-
-        const product = productRes.rows[0];
-        const newStock = parseInt(product.stock) + qty;
-
-        await client.query(
-          "UPDATE products SET stock = $1, updated_at = NOW() WHERE id = $2::uuid",
-          [newStock, id],
+        console.log("📝 [STOCK] Movimiento registrado en stock_movements");
+      } catch (movErr) {
+        console.warn(
+          "⚠️ [STOCK] No se pudo registrar movimiento (posiblemente falta la tabla):",
+          movErr.message,
         );
-
-        await client.query(
-          `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by) VALUES ($1::uuid, $2, $3, $4, $5::uuid)`,
-          [id, qty, "adjustment", reason || "Ajuste desde Stock", userId],
-        );
-
-        await client.query("COMMIT");
-
-        res.json({
-          success: true,
-          message: `Stock actualizado: +${qty} unidades`,
-          data: {
-            id: product.id,
-            name: product.name,
-            sku: product.sku,
-            stock: newStock,
-            sale_price: product.sale_price,
-            category_id: product.category_id,
-          },
-        });
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
       }
+
+      const actionText = action === "increase" ? "agregaron" : "retiraron";
+      res.json({
+        success: true,
+        message: `Se ${actionText} ${qty} unidades`,
+        data: {
+          id: product.id,
+          name: product.name,
+          sku: product.sku,
+          stock: newStock,
+        },
+      });
     } catch (err) {
-      console.error("❌ Error PUT /:id/stock:", err.message);
-      if (err.message === "Producto no encontrado o inactivo")
-        return res.status(404).json({ success: false, message: err.message });
+      console.error("🔥 [STOCK] Error inesperado:", err);
       res
         .status(500)
-        .json({ success: false, message: "Error al actualizar stock" });
+        .json({ success: false, message: "Error interno del servidor" });
     }
   },
 );

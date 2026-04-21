@@ -1,6 +1,5 @@
-// src/middlewares/licenseMiddleware.js
+// backend/src/middlewares/licenseMiddleware.js
 import { getCurrentLicenseStatus } from "../services/licenseMonitor.js";
-import { checkSystemLicense } from "../services/licenseService.js";
 
 const PUBLIC_PATHS = [
   "/api/license/status",
@@ -17,23 +16,13 @@ const PUBLIC_PATHS = [
   "/api/test",
 ];
 
-export const requireLicense = async (req, res, next) => {
+export const requireLicense = (req, res, next) => {
   // Rutas públicas sin licencia
   if (PUBLIC_PATHS.some((path) => req.path.startsWith(path))) {
     return next();
   }
 
-  // Obtener estado del cache
-  let status = getCurrentLicenseStatus();
-
-  // Si el cache dice que no es válido o no tiene datos, verificar directamente la BD
-  if (!status.valid || !status.data) {
-    const freshCheck = await checkSystemLicense();
-    status = {
-      valid: freshCheck.valid,
-      data: freshCheck.data,
-    };
-  }
+  const status = getCurrentLicenseStatus();
 
   if (!status.valid) {
     return res.status(403).json({

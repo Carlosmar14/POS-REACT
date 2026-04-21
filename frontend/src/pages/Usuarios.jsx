@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import Swal from "sweetalert2";
+import LoaderPOS from "../components/LoaderPOS";
 import {
   Plus,
   UserCheck,
@@ -295,15 +296,9 @@ export default function Usuarios() {
       u.email.toLowerCase().includes(search.toLowerCase()),
   );
 
+  // ✅ Reemplazamos spinner manual por LoaderPOS
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="spinner" />
-        <span className="ml-3 text-gray-500 dark:text-gray-400">
-          Cargando usuarios...
-        </span>
-      </div>
-    );
+    return <LoaderPOS message="Cargando usuarios..." />;
   }
 
   return (
