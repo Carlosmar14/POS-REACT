@@ -7,13 +7,7 @@ import z from "zod";
 
 const router = express.Router();
 
-// Helper: obtener usuario autenticado
-const getAuthUser = (req) => ({
-  id: req.user?.id || req.user?.sub || req.user?.userId,
-  role: (req.user?.role || req.user?.rol || "").trim().toLowerCase(),
-});
-
-// Esquema de validación para venta
+// ---------- ESQUEMAS DE VALIDACIÓN ----------
 const saleSchema = z.object({
   items: z
     .array(
@@ -24,13 +18,28 @@ const saleSchema = z.object({
     )
     .min(1),
   paymentMethod: z.enum(["cash", "card", "transfer"]).default("cash"),
+  invoice_number: z.string().max(50).optional(),
+  customer_name: z.string().max(255).optional(),
+  cf: z.boolean().optional(),
+  fe: z.string().max(50).optional(),
+});
+
+const invoiceUpdateSchema = z.object({
+  invoice_number: z.string().min(1, "Número de factura requerido").max(50),
+  customer_name: z.string().min(1, "Nombre del cliente requerido").max(255),
+  cf: z.boolean().default(false),
+  fe: z.string().max(50).optional().nullable(),
+});
+
+// Helper
+const getAuthUser = (req) => ({
+  id: req.user?.id || req.user?.sub || req.user?.userId,
+  role: (req.user?.role || req.user?.rol || "").trim().toLowerCase(),
 });
 
 // ============================================================
-// RUTAS ESPECÍFICAS (deben ir antes de las rutas con parámetros)
+// RUTA: GET /stats
 // ============================================================
-
-// ✅ GET /stats - Estadísticas de ventas
 router.get("/stats", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
@@ -86,15 +95,12 @@ router.get("/stats", verifyToken, async (req, res) => {
   }
 });
 
-// ✅ GET /stock-movements - Historial de movimientos de stock
+// ============================================================
+// RUTA: GET /stock-movements
+// ============================================================
 router.get("/stock-movements", verifyToken, async (req, res) => {
   try {
-    console.log("📥 [STOCK] Petición recibida:", req.query);
     const user = getAuthUser(req);
-    if (!user.id) {
-      return res.status(401).json({ success: false, message: "No autorizado" });
-    }
-
     const {
       start,
       end,
@@ -106,28 +112,25 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
     const offset = (parseInt(page) - 1) * Math.max(parseInt(limit), 1);
     const conditions = [],
       values = [];
-
     if (user.role !== "admin") {
       conditions.push(`sm.created_by = $${values.length + 1}::uuid`);
       values.push(user.id);
     }
     if (start) {
       const startDate = new Date(start);
-      if (isNaN(startDate.getTime())) {
+      if (isNaN(startDate.getTime()))
         return res
           .status(400)
           .json({ success: false, message: "Fecha inicio inválida" });
-      }
       conditions.push(`sm.created_at >= $${values.length + 1}`);
       values.push(startDate);
     }
     if (end) {
       const endDate = new Date(end + "T23:59:59");
-      if (isNaN(endDate.getTime())) {
+      if (isNaN(endDate.getTime()))
         return res
           .status(400)
           .json({ success: false, message: "Fecha fin inválida" });
-      }
       conditions.push(`sm.created_at <= $${values.length + 1}`);
       values.push(endDate);
     }
@@ -145,21 +148,11 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
         values.push(movementType);
       }
     }
-
     const whereClause = conditions.length
       ? `WHERE ${conditions.join(" AND ")}`
       : "";
     const sql = `
-      SELECT 
-        sm.id,
-        sm.product_id,
-        p.name AS product_name,
-        ABS(sm.quantity) AS quantity,
-        sm.movement_type,
-        sm.reason,
-        sm.created_at,
-        sm.created_by,
-        u.name AS user_name
+      SELECT sm.id, sm.product_id, p.name AS product_name, ABS(sm.quantity) AS quantity, sm.movement_type, sm.reason, sm.created_at, sm.created_by, u.name AS user_name
       FROM stock_movements sm
       LEFT JOIN products p ON sm.product_id = p.id
       LEFT JOIN users u ON sm.created_by = u.id
@@ -167,14 +160,10 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
       ORDER BY sm.created_at DESC
       LIMIT $${values.length + 1} OFFSET $${values.length + 2}
     `;
-    const countSql = `SELECT COUNT(*) AS total FROM stock_movements sm ${whereClause}`;
-
+    const countSql = `SELECT COUNT(*) FROM stock_movements sm ${whereClause}`;
     const result = await pool.query(sql, [...values, parseInt(limit), offset]);
     const countResult = await pool.query(countSql, values);
-
-    const total = parseInt(countResult.rows[0].total);
-    const totalPages = Math.ceil(total / parseInt(limit)) || 1;
-
+    const total = parseInt(countResult.rows[0].count);
     res.json({
       success: true,
       data: result.rows,
@@ -182,40 +171,39 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        totalPages,
+        totalPages: Math.ceil(total / parseInt(limit)) || 1,
       },
     });
   } catch (err) {
-    console.error("🔥 Error en GET /stock-movements:", err);
-    // ✅ CORREGIDO: Ahora solo devuelve un mensaje genérico, sin exponer err.message
-    res.status(500).json({
-      success: false,
-      message: "Error interno del servidor",
-    });
+    console.error("Error GET /stock-movements:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
   }
 });
 
 // ============================================================
-// RUTAS CON PARÁMETROS DINÁMICOS (deben ir después de las específicas)
+// POST / - Procesar venta (MODIFICADO para aceptar factura)
 // ============================================================
-
-// POST / - Procesar venta
 router.post("/", verifyToken, async (req, res) => {
   const client = await pool.connect();
   try {
     const validated = saleSchema.parse(req.body);
-    const { items, paymentMethod } = validated;
+    const { items, paymentMethod, invoice_number, customer_name, cf, fe } =
+      validated;
     const user = getAuthUser(req);
     if (!user.id)
       return res
         .status(401)
         .json({ success: false, message: "Usuario no autenticado" });
+
     await client.query("BEGIN");
 
+    // sesión de caja
     let cash_session_id = null;
     if (user.role !== "admin") {
       const cashSessionRes = await client.query(
-        `SELECT id FROM cash_sessions WHERE user_id = $1::uuid AND status = 'open'`,
+        "SELECT id FROM cash_sessions WHERE user_id = $1::uuid AND status = 'open'",
         [user.id],
       );
       if (cashSessionRes.rows.length === 0) {
@@ -268,20 +256,31 @@ router.post("/", verifyToken, async (req, res) => {
     );
     const totalColumn = colRes.rows[0]?.column_name || "total_amount";
     const saleRes = await client.query(
-      `INSERT INTO sales (user_id, payment_method, ${totalColumn}, status, created_at, cash_session_id) VALUES ($1::uuid, $2, $3, 'completed', NOW(), $4) RETURNING id, created_at`,
-      [user.id, paymentMethod, total, cash_session_id],
+      `INSERT INTO sales (user_id, payment_method, ${totalColumn}, status, created_at, cash_session_id, invoice_number, customer_name, cf, fe)
+       VALUES ($1::uuid, $2, $3, 'completed', NOW(), $4, $5, $6, $7, $8)
+       RETURNING id, created_at`,
+      [
+        user.id,
+        paymentMethod,
+        total,
+        cash_session_id,
+        invoice_number || null,
+        customer_name || null,
+        cf || false,
+        fe || null,
+      ],
     );
     const saleId = saleRes.rows[0].id;
 
     for (const d of saleItemsData) {
       await client.query(
-        `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES ($1, $2::uuid, $3, $4, $5)`,
+        "INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES ($1, $2::uuid, $3, $4, $5)",
         [saleId, d.productId, d.quantity, d.unitPrice, d.subtotal],
       );
     }
     for (const item of items) {
       await client.query(
-        `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id) VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)`,
+        "INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id) VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)",
         [
           item.productId,
           -item.quantity,
@@ -300,6 +299,7 @@ router.post("/", verifyToken, async (req, res) => {
       total,
       paymentMethod,
       itemsCount: items.length,
+      invoice: invoice_number || null,
     });
 
     res.status(201).json({
@@ -311,16 +311,16 @@ router.post("/", verifyToken, async (req, res) => {
         createdAt: saleRes.rows[0].created_at,
         paymentMethod,
         itemsCount: items.length,
+        invoice_number: invoice_number || null,
       },
     });
   } catch (err) {
     await client.query("ROLLBACK");
-    if (err.name === "ZodError") {
+    if (err.name === "ZodError")
       return res.status(400).json({
         success: false,
         message: err.errors.map((e) => e.message).join(", "),
       });
-    }
     console.error("Error POST /sales:", err);
     res
       .status(500)
@@ -330,7 +330,9 @@ router.post("/", verifyToken, async (req, res) => {
   }
 });
 
+// ============================================================
 // GET / - Listar ventas (historial)
+// ============================================================
 router.get("/", verifyToken, async (req, res) => {
   try {
     const user = getAuthUser(req);
@@ -375,9 +377,10 @@ router.get("/", verifyToken, async (req, res) => {
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'sales' AND column_name IN ('total_amount', 'total')`,
     );
     const totalColumn = colRes.rows[0]?.column_name || "total_amount";
-    let sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, u.email AS cashier_email, COUNT(si.id) as items_count FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN sale_items si ON s.id = si.sale_id`;
+    let sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, COUNT(si.id) as items_count, s.invoice_number, s.customer_name, s.cf, s.fe
+               FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN sale_items si ON s.id = si.sale_id`;
     if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
-    sql += ` GROUP BY s.id, s.${totalColumn}, s.payment_method, s.status, s.created_at, s.user_id, u.name, u.email ORDER BY s.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
+    sql += ` GROUP BY s.id, s.${totalColumn}, s.payment_method, s.status, s.created_at, s.user_id, u.name ORDER BY s.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
     values.push(parseInt(limit), offset);
     const result = await pool.query(sql, values);
 
@@ -403,14 +406,15 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
+// ============================================================
 // GET /:id - Detalle de una venta
+// ============================================================
 router.get("/:id", verifyToken, async (req, res) => {
   try {
     const uuidRegex =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(req.params.id)) {
+    if (!uuidRegex.test(req.params.id))
       return res.status(400).json({ success: false, message: "ID no válido" });
-    }
     const user = getAuthUser(req);
     if (user.role !== "admin") {
       const saleCheck = await pool.query(
@@ -420,26 +424,26 @@ router.get("/:id", verifyToken, async (req, res) => {
       if (
         saleCheck.rows.length === 0 ||
         String(saleCheck.rows[0].user_id) !== String(user.id)
-      ) {
+      )
         return res
           .status(403)
           .json({ success: false, message: "Acceso denegado" });
-      }
     }
     const colRes = await pool.query(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'sales' AND column_name IN ('total_amount', 'total')`,
     );
     const totalColumn = colRes.rows[0]?.column_name || "total_amount";
-    const sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, u.email AS cashier_email, si.id AS sale_item_id, si.quantity, si.unit_price, si.subtotal, p.id AS product_id, p.name AS product_name, p.sku AS product_sku, p.image_url AS product_image FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN sale_items si ON s.id = si.sale_id LEFT JOIN products p ON si.product_id = p.id WHERE s.id = $1::uuid ORDER BY si.id ASC`;
+    const sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, si.id AS sale_item_id, si.quantity, si.unit_price, si.subtotal, p.id AS product_id, p.name AS product_name, p.sku AS product_sku, p.image_url AS product_image, s.invoice_number, s.customer_name, s.cf, s.fe
+                 FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN sale_items si ON s.id = si.sale_id LEFT JOIN products p ON si.product_id = p.id
+                 WHERE s.id = $1::uuid ORDER BY si.id ASC`;
     const result = await pool.query(sql, [req.params.id]);
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0)
       return res
         .status(404)
         .json({ success: false, message: "Venta no encontrada" });
-    }
     const sale = result.rows[0];
     const items = result.rows
-      .filter((r) => r.product_id !== null)
+      .filter((r) => r.product_id)
       .map((r) => ({
         saleItemId: r.sale_item_id,
         productId: r.product_id,
@@ -458,12 +462,12 @@ router.get("/:id", verifyToken, async (req, res) => {
         paymentMethod: sale.payment_method,
         status: sale.status,
         createdAt: sale.created_at,
-        cashier: {
-          id: sale.user_id,
-          name: sale.cashier_name,
-          email: sale.cashier_email,
-        },
+        cashier: { id: sale.user_id, name: sale.cashier_name },
         items,
+        invoice_number: sale.invoice_number,
+        customer_name: sale.customer_name,
+        cf: sale.cf,
+        fe: sale.fe,
       },
     });
   } catch (err) {
@@ -471,6 +475,85 @@ router.get("/:id", verifyToken, async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Error al cargar detalles" });
+  }
+});
+
+// ============================================================
+// NUEVO ENDPOINT: PUT /:id/assign-invoice
+// Asigna datos de factura a una venta existente
+// ============================================================
+router.put("/:id/assign-invoice", verifyToken, async (req, res) => {
+  try {
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(req.params.id))
+      return res
+        .status(400)
+        .json({ success: false, message: "ID de venta inválido" });
+
+    // Solo admin puede asignar facturas
+    const user = getAuthUser(req);
+    if (user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Solo administradores pueden generar facturas",
+      });
+    }
+
+    const parsed = invoiceUpdateSchema.parse(req.body);
+    const { invoice_number, customer_name, cf, fe } = parsed;
+
+    // Verificar que la venta existe y no tiene ya factura (opcional, puede sobrescribirse)
+    const saleRes = await pool.query(
+      "SELECT id, invoice_number FROM sales WHERE id = $1::uuid AND status = 'completed'",
+      [req.params.id],
+    );
+    if (saleRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Venta no encontrada o no completada",
+      });
+    }
+
+    // Actualizar
+    const result = await pool.query(
+      `UPDATE sales SET invoice_number = $1, customer_name = $2, cf = $3, fe = $4
+       WHERE id = $5::uuid
+       RETURNING id, invoice_number, customer_name, cf, fe`,
+      [
+        invoice_number.trim(),
+        customer_name.trim(),
+        cf,
+        fe || null,
+        req.params.id,
+      ],
+    );
+
+    await logAction("INVOICE_ASSIGNED", user.id, req, {
+      saleId: req.params.id,
+      invoice_number,
+      customer_name,
+      cf,
+      fe,
+    });
+
+    res.json({
+      success: true,
+      message: "Factura asignada correctamente",
+      data: result.rows[0],
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Datos inválidos",
+        errors: err.errors.map((e) => e.message),
+      });
+    }
+    console.error("Error al asignar factura:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
   }
 });
 

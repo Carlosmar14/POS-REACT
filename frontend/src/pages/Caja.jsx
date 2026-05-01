@@ -1,5 +1,6 @@
 // frontend/src/pages/Caja.jsx
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useReactToPrint } from "react-to-print";
 import api from "../api";
 import { useCart } from "../store/cartStore";
@@ -10,7 +11,7 @@ import TicketToPrint from "../components/TicketToPrint";
 import LoaderPOS from "../components/LoaderPOS";
 import MoneyDisplay from "../components/MoneyDisplay";
 import { useConfig } from "../context/ConfigContext";
-import { escapeHtml } from "../utils/sanitize"; // ✅ Seguridad XSS
+import { escapeHtml } from "../utils/sanitize";
 import {
   Search,
   Minus,
@@ -27,7 +28,6 @@ import {
   ChevronRight,
   Filter,
   X,
-  Camera,
   Apple,
   GlassWater,
   SprayCan,
@@ -66,6 +66,10 @@ import {
   Gift,
   Store,
   Grid,
+  FileText,
+  ArrowLeft,
+  CheckCircle,
+  BadgeCheck,
 } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
@@ -152,6 +156,14 @@ export default function Caja() {
   );
 
   const [editingQty, setEditingQty] = useState(null);
+
+  // ------------------ MODAL DE COBRO ------------------
+  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [checkoutStep, setCheckoutStep] = useState(1); // 1 = elegir tipo, 2 = facturación
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [cf, setCf] = useState(false);
+  const [fe, setFe] = useState("");
 
   const ticketRef = useRef(null);
   const searchInputRef = useRef(null);
@@ -252,7 +264,7 @@ export default function Caja() {
     [addToCart, t],
   );
 
-  const handleCheckout = async () => {
+  const handleCheckout = () => {
     if (!items || items.length === 0) {
       return Swal.fire({
         title: t("caja.empty_cart"),
@@ -262,6 +274,7 @@ export default function Caja() {
         confirmButtonColor: "#3b82f6",
       });
     }
+
     for (const item of items) {
       const product = products.find((p) => p.id === item.id);
       if (product && product.stock < (parseInt(item.qty) || 1)) {
@@ -272,23 +285,39 @@ export default function Caja() {
         );
       }
     }
-    const methodStr =
-      payment === "cash"
-        ? t("caja.payment_methods.cash")
-        : payment === "card"
-          ? t("caja.payment_methods.card")
-          : t("caja.payment_methods.transfer");
-    const result = await Swal.fire({
-      title: t("caja.confirm_sale"),
-      // ✅ HTML escapado para prevenir XSS
-      html: `<div style="text-align:left"><p><strong>Total:</strong> ${total().toFixed(2)}</p><p><strong>Método:</strong> ${escapeHtml(methodStr)}</p><p><strong>Items:</strong> ${items.length}</p></div>`,
-      icon: "question",
-      showCancelButton: true,
-      confirmButtonText: t("caja.confirm_yes"),
-      cancelButtonText: t("caja.confirm_cancel"),
-      reverseButtons: true,
+
+    // Limpiar formulario de facturación
+    setInvoiceNumber("");
+    setCustomerName("");
+    setCf(false);
+    setFe("");
+    setCheckoutStep(1);
+    setShowCheckoutModal(true);
+  };
+
+  const processSimpleSale = async () => {
+    setShowCheckoutModal(false);
+    await doSale(null);
+  };
+
+  const processInvoiceSale = async () => {
+    if (!invoiceNumber.trim() || !customerName.trim()) {
+      return Swal.fire({
+        title: "Datos incompletos",
+        text: "Debe completar el número de factura y el cliente.",
+        icon: "warning",
+      });
+    }
+    setShowCheckoutModal(false);
+    await doSale({
+      invoice_number: invoiceNumber.trim(),
+      customer_name: customerName.trim(),
+      cf,
+      fe: fe.trim() || null,
     });
-    if (!result.isConfirmed) return;
+  };
+
+  const doSale = async (invoiceData) => {
     setProcessing(true);
     try {
       const saleData = {
@@ -298,6 +327,14 @@ export default function Caja() {
         })),
         paymentMethod: payment,
       };
+
+      if (invoiceData) {
+        saleData.invoice_number = invoiceData.invoice_number;
+        saleData.customer_name = invoiceData.customer_name;
+        saleData.cf = invoiceData.cf;
+        saleData.fe = invoiceData.fe;
+      }
+
       const res = await api.post("/sales", saleData);
       if (res.data?.success) {
         const backendData = res.data.data || {};
@@ -316,6 +353,14 @@ export default function Caja() {
         setShowTicket(true);
         setTimeout(() => handlePrint(), 300);
         clear();
+
+        Swal.fire({
+          icon: "success",
+          title: invoiceData ? "Factura registrada" : "Venta exitosa",
+          timer: 1500,
+          showConfirmButton: false,
+        });
+
         await loadProducts();
       }
     } catch (err) {
@@ -345,7 +390,6 @@ export default function Caja() {
     },
   });
 
-  // ✅ Imprimir ticket desde el historial
   const printTicket = async (saleId) => {
     try {
       const res = await api.get(`/sales/${saleId}`);
@@ -434,7 +478,11 @@ export default function Caja() {
             <button
               key={page}
               onClick={() => setCurrentPage(page)}
-              className={`w-8 h-8 rounded-lg text-sm font-medium ${currentPage === page ? "bg-blue-500 text-white" : "hover:bg-gray-100"}`}
+              className={`w-8 h-8 rounded-lg text-sm font-medium ${
+                currentPage === page
+                  ? "bg-blue-500 text-white"
+                  : "hover:bg-gray-100"
+              }`}
             >
               {page}
             </button>
@@ -517,7 +565,13 @@ export default function Caja() {
               <MoneyDisplay amount={parseFloat(product.sale_price || 0)} />
             </p>
             <span
-              className={`text-xs font-medium px-2 py-1 rounded-full ${isOutOfStock ? "bg-red-100 text-red-700" : isLowStock ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}
+              className={`text-xs font-medium px-2 py-1 rounded-full ${
+                isOutOfStock
+                  ? "bg-red-100 text-red-700"
+                  : isLowStock
+                    ? "bg-orange-100 text-orange-700"
+                    : "bg-green-100 text-green-700"
+              }`}
             >
               {t("caja.stock_label")}: {product.stock}
             </span>
@@ -615,7 +669,11 @@ export default function Caja() {
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => setSelectedCategory("all")}
-                    className={`px-3 py-1.5 rounded-full text-sm font-medium ${selectedCategory === "all" ? "bg-blue-500 text-white" : "bg-gray-100 hover:bg-gray-200"}`}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+                      selectedCategory === "all"
+                        ? "bg-blue-500 text-white"
+                        : "bg-gray-100 hover:bg-gray-200"
+                    }`}
                   >
                     {t("caja.all_categories")}
                   </button>
@@ -625,7 +683,11 @@ export default function Caja() {
                       <button
                         key={cat.id}
                         onClick={() => setSelectedCategory(cat.id)}
-                        className={`px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 transition-colors ${selectedCategory === cat.id ? "bg-blue-500 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-700"}`}
+                        className={`px-3 py-1.5 rounded-full text-sm font-medium inline-flex items-center gap-1.5 transition-colors ${
+                          selectedCategory === cat.id
+                            ? "bg-blue-500 text-white"
+                            : "bg-gray-100 hover:bg-gray-200 text-gray-700"
+                        }`}
                       >
                         <IconComponent size={14} />
                         <span>{cat.name}</span>
@@ -844,7 +906,11 @@ export default function Caja() {
                       key={m.id}
                       onClick={() => setPayment(m.id)}
                       disabled={processing}
-                      className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-1 ${payment === m.id ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 hover:border-gray-300 bg-white"}`}
+                      className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-1 ${
+                        payment === m.id
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
+                          : "border-gray-200 hover:border-gray-300 bg-white"
+                      }`}
                     >
                       <m.icon size={20} />
                       <span className="text-xs font-medium">{m.label}</span>
@@ -852,6 +918,7 @@ export default function Caja() {
                   ))}
                 </div>
               </div>
+
               <div className="bg-white rounded-xl p-4">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-sm text-gray-600">
@@ -908,6 +975,173 @@ export default function Caja() {
           </div>
         </div>
       </div>
+
+      {/* ------------------------- MODAL DE COBRO MEJORADO ------------------------- */}
+      {showCheckoutModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 transition-opacity">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all scale-100">
+              {checkoutStep === 1 ? (
+                /* Paso 1: Elegir tipo de venta (diseño mejorado) */
+                <div className="p-6">
+                  <div className="text-center mb-6">
+                    <div className="inline-flex items-center justify-center w-20 h-20 bg-blue-100 dark:bg-blue-900/30 rounded-3xl mb-4">
+                      <ShoppingCart
+                        className="text-blue-600 dark:text-blue-400"
+                        size={40}
+                      />
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+                      Procesar venta
+                    </h2>
+                    <p className="text-gray-500 dark:text-gray-400 mt-1">
+                      Seleccione el tipo de operación
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    {/* Tarjeta Venta Simple */}
+                    <button
+                      onClick={processSimpleSale}
+                      className="flex flex-col items-center p-6 bg-gray-50 dark:bg-gray-700/50 rounded-2xl border-2 border-gray-200 dark:border-gray-600 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all duration-200 group"
+                    >
+                      <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                        <Printer
+                          size={30}
+                          className="text-blue-600 dark:text-blue-400"
+                        />
+                      </div>
+                      <span className="font-semibold text-gray-900 dark:text-white text-center">
+                        Venta Simple
+                      </span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 mt-1 text-center">
+                        Sin factura fiscal
+                      </span>
+                    </button>
+
+                    {/* Tarjeta Factura Electrónica */}
+                    <button
+                      onClick={() => setCheckoutStep(2)}
+                      className="flex flex-col items-center p-6 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-2xl border-2 border-blue-200 dark:border-blue-800 hover:border-blue-500 hover:shadow-lg hover:shadow-blue-200/50 dark:hover:shadow-blue-900/30 transition-all duration-200 group"
+                    >
+                      <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-md">
+                        <FileText size={30} className="text-white" />
+                      </div>
+                      <span className="font-semibold text-gray-900 dark:text-white text-center">
+                        Factura Electrónica
+                      </span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 mt-1 text-center">
+                        Con datos fiscales
+                      </span>
+                      <BadgeCheck
+                        size={20}
+                        className="text-blue-500 mt-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      />
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => setShowCheckoutModal(false)}
+                    className="w-full py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              ) : (
+                /* Paso 2: Facturación Electrónica */
+                <div className="p-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center">
+                      <FileText
+                        className="text-blue-600 dark:text-blue-400"
+                        size={20}
+                      />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                        Facturación Electrónica
+                      </h2>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Complete los datos fiscales
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Número de factura *
+                      </label>
+                      <input
+                        type="text"
+                        value={invoiceNumber}
+                        onChange={(e) => setInvoiceNumber(e.target.value)}
+                        className="input"
+                        placeholder="Ej: 18753"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Cliente *
+                      </label>
+                      <input
+                        type="text"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        className="input"
+                        placeholder="Nombre del cliente"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-xl">
+                      <input
+                        type="checkbox"
+                        id="cf"
+                        checked={cf}
+                        onChange={(e) => setCf(e.target.checked)}
+                        className="h-4 w-4 text-blue-600 rounded focus:ring-blue-500"
+                      />
+                      <label
+                        htmlFor="cf"
+                        className="text-sm font-medium text-gray-700 dark:text-gray-300"
+                      >
+                        Control Fiscal (C.F.)
+                      </label>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        N° FE (Factura Electrónica)
+                      </label>
+                      <input
+                        type="text"
+                        value={fe}
+                        onChange={(e) => setFe(e.target.value)}
+                        className="input"
+                        placeholder="Ej: 21718"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 mt-6">
+                    <button
+                      onClick={() => setCheckoutStep(1)}
+                      className="flex-1 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition flex items-center justify-center gap-2"
+                    >
+                      <ArrowLeft size={16} /> Volver
+                    </button>
+                    <button
+                      onClick={processInvoiceSale}
+                      className="flex-1 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-medium transition flex items-center justify-center gap-2 shadow-md"
+                    >
+                      Emitir Factura <CheckCircle size={18} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <video ref={videoRef} style={{ display: "none" }} />
       <canvas ref={canvasRef} style={{ display: "none" }} />

@@ -15,8 +15,6 @@ dotenv.config();
 import { checkEnv } from "./src/config/envCheck.js";
 checkEnv(); // ← Lanza error si falta alguna variable crítica
 
-import { verifyToken } from "./src/middlewares/auth.js";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
@@ -178,7 +176,9 @@ const importRoute = async (routePath, routeName) => {
       licenseRoutes,
       cashRoutes,
       currenciesRoutes,
-      refundRoutes, // ✅ nueva ruta
+      refundRoutes,
+      invoicesRoutes, // ← NUEVA RUTA: facturas
+      creditNotesRoutes, // ← NUEVA RUTA: notas de crédito
     ] = await Promise.all([
       importRoute("./src/routes/auth.routes.js", "auth"),
       importRoute("./src/routes/products.routes.js", "products"),
@@ -191,7 +191,9 @@ const importRoute = async (routePath, routeName) => {
       importRoute("./src/routes/license.routes.js", "license"),
       importRoute("./src/routes/cash.routes.js", "cash"),
       importRoute("./src/routes/currencies.routes.js", "currencies"),
-      importRoute("./src/routes/refunds.routes.js", "refunds"), // ✅
+      importRoute("./src/routes/refunds.routes.js", "refunds"),
+      importRoute("./src/routes/invoices.routes.js", "invoices"), // ← NUEVO
+      importRoute("./src/routes/creditNotes.routes.js", "creditNotes"), // ← NUEVO
     ]);
 
     const { requireLicense } =
@@ -218,7 +220,9 @@ const importRoute = async (routePath, routeName) => {
     app.use("/api/configuracion", configuracionRoutes);
     app.use("/api/cash", cashRoutes);
     app.use("/api/currencies", currenciesRoutes);
-    app.use("/api/refunds", refundRoutes); // ✅
+    app.use("/api/refunds", refundRoutes);
+    app.use("/api/invoices", invoicesRoutes); // ← NUEVO
+    app.use("/api/credit-notes", creditNotesRoutes); // ← NUEVO
 
     // ============================================================================
     // SERVIDOR DE FRONTEND ESTÁTICO

@@ -1,3 +1,4 @@
+// frontend/src/components/Layout.jsx
 import { NavLink, useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAuth } from "../store/authStore";
 import { useStockNotifications } from "../hooks/useStockNotifications";
@@ -23,6 +24,7 @@ import {
   Settings,
   RefreshCw,
   CreditCard,
+  Receipt, // ← para Facturación
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import LoaderPOS from "./LoaderPOS";
@@ -77,7 +79,7 @@ export default function Layout() {
     navigate("/stock");
   };
 
-  // Menú según rol con claves de traducción
+  // Menú según rol (admin reorganizado)
   const navItems = (() => {
     if (user?.role === "warehouse") {
       return [
@@ -110,26 +112,34 @@ export default function Layout() {
     }
     if (user?.role === "admin") {
       return [
+        // ── VENTAS ──
         {
           to: "/caja",
           icon: ShoppingCart,
           translationKey: "layout.menu.point_of_sale",
         },
-        { to: "/stock", icon: Boxes, translationKey: "layout.menu.stock" },
         {
           to: "/historial",
           icon: History,
           translationKey: "layout.menu.sales_history",
         },
         {
+          to: "/facturacion",
+          icon: Receipt, // ← icono distinto
+          translationKey: "layout.menu.invoices",
+        },
+        {
+          to: "/caja-gestion",
+          icon: CreditCard,
+          translationKey: "layout.menu.cash_management",
+        },
+
+        // ── INVENTARIO ──
+        { to: "/stock", icon: Boxes, translationKey: "layout.menu.stock" },
+        {
           to: "/historial-stock",
           icon: History,
           translationKey: "layout.menu.stock_history",
-        },
-        {
-          to: "/reportes",
-          icon: BarChart3,
-          translationKey: "layout.menu.reports",
         },
         {
           to: "/productos",
@@ -141,17 +151,19 @@ export default function Layout() {
           icon: Tags,
           translationKey: "layout.menu.categories",
         },
+
+        // ── ADMINISTRACIÓN ──
+        {
+          to: "/reportes",
+          icon: BarChart3,
+          translationKey: "layout.menu.reports",
+        },
         { to: "/usuarios", icon: Users, translationKey: "layout.menu.users" },
         { to: "/logs", icon: FileText, translationKey: "layout.menu.logs" },
         {
           to: "/configuracion",
           icon: Settings,
           translationKey: "layout.menu.configuration",
-        },
-        {
-          to: "/caja-gestion",
-          icon: CreditCard,
-          translationKey: "layout.menu.cash_management",
         },
       ];
     }

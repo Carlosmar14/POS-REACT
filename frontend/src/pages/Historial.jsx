@@ -1,21 +1,26 @@
-// frontend/src/pages/Historial.jsx
-import { useState, useEffect, Fragment, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  Fragment,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { useReactToPrint } from "react-to-print";
 import { useAuth } from "../store/authStore";
 import api from "../api";
 import Swal from "sweetalert2";
+import jsPDF from "jspdf";
 import { useConfig } from "../context/ConfigContext";
 import { useTranslation } from "../context/LanguageContext";
 import LoaderPOS from "../components/LoaderPOS";
 import MoneyDisplay from "../components/MoneyDisplay";
 import TicketToPrint from "../components/TicketToPrint";
-import { escapeHtml } from "../utils/sanitize";
 import {
   History,
   Calendar,
   ChevronLeft,
   ChevronRight,
-  Search,
   AlertCircle,
   Package,
   ChevronDown,
@@ -26,12 +31,10 @@ import {
   CreditCard,
   DollarSign,
   Landmark,
-  Filter,
+  Banknote,
   X,
   FileText,
-  ArrowUpRight,
   ArrowDownRight,
-  TrendingDown,
   RefreshCw,
   User,
   SlidersHorizontal,
@@ -41,10 +44,125 @@ const DEFAULT_ITEMS_PER_PAGE = 20;
 const MAX_REPORT_RECORDS = 500;
 const UPLOADS_URL = import.meta.env.VITE_UPLOADS_URL || "http://localhost:3000";
 
+const imageCache = new Map();
+const MAX_CACHE_SIZE = 30;
+
+const imageToBase64 = async (url, width = 60, height = 60, quality = 0.95) => {
+  if (!url) return null;
+  if (imageCache.has(url)) return imageCache.get(url);
+  try {
+    const response = await fetch(url, {
+      mode: "cors",
+      headers: { Accept: "image/*" },
+      cache: "force-cache",
+    });
+    if (!response.ok) throw new Error("Fetch failed");
+    const blob = await response.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.crossOrigin = "anonymous";
+      i.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        res(i);
+      };
+      i.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        rej(new Error("Image load failed"));
+      };
+      i.src = objUrl;
+    });
+    const canvas = document.createElement("canvas");
+    const ratio = img.width / img.height;
+    canvas.width = ratio > 1 ? width : Math.round(height * ratio);
+    canvas.height = ratio > 1 ? Math.round(width / ratio) : height;
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const b64 = canvas.toDataURL("image/jpeg", quality);
+    if (imageCache.size >= MAX_CACHE_SIZE)
+      imageCache.delete(imageCache.keys().next().value);
+    imageCache.set(url, b64);
+    return b64;
+  } catch {
+    return null;
+  }
+};
+
+const addPageFooter = (
+  pdf,
+  pageNum,
+  totalPages,
+  pageWidth,
+  pageHeight,
+  companyName,
+) => {
+  const footerY = pageHeight - 12;
+  pdf.setDrawColor(150, 160, 170);
+  pdf.setLineWidth(0.2);
+  pdf.line(15, footerY, pageWidth - 15, footerY);
+  pdf.setTextColor(100, 110, 120);
+  pdf.setFontSize(5);
+  pdf.setFont("helvetica", "normal");
+  pdf.text(`${companyName || "POS"} • Documento Confidencial`, 15, footerY + 4);
+  pdf.text(`Página ${pageNum} de ${totalPages}`, pageWidth / 2, footerY + 4, {
+    align: "center",
+  });
+  pdf.text(
+    `Generado: ${new Date().toLocaleString("es-UY")}`,
+    pageWidth - 15,
+    footerY + 4,
+    { align: "right" },
+  );
+};
+
+const renderMainTableHeader = (pdf, y, mL, mR, pageW) => {
+  const cW = pageW - mL - mR;
+  pdf.setFillColor(28, 42, 58);
+  pdf.rect(mL, y, cW, 8, "F");
+  pdf.setDrawColor(180, 170, 130);
+  pdf.setLineWidth(0.2);
+  pdf.line(mL, y + 8, mL + cW, y + 8);
+  pdf.setTextColor(230, 235, 240);
+  pdf.setFontSize(6.5);
+  pdf.setFont("helvetica", "bold");
+  const cols = [
+    { t: "ID Venta", x: mL + 3 },
+    { t: "Fecha / Hora", x: mL + 22 },
+    { t: "Operador", x: mL + 48 },
+    { t: "Items", x: mL + 82, a: "center" },
+    { t: "Método Pago", x: mL + 98 },
+    { t: "Estado", x: mL + 124 },
+    { t: "Total", x: mL + 150, a: "right" },
+  ];
+  cols.forEach((c) => pdf.text(c.t, c.x, y + 5, { align: c.a || "left" }));
+  return y + 8;
+};
+
+const renderProductsTableHeader = (pdf, y, mL, contentW) => {
+  pdf.setFillColor(245, 247, 250);
+  pdf.rect(mL + 5, y, contentW - 5, 5, "F");
+  pdf.setDrawColor(200, 205, 210);
+  pdf.setLineWidth(0.15);
+  pdf.line(mL + 5, y, mL + contentW, y);
+  pdf.line(mL + 5, y + 5, mL + contentW, y + 5);
+  pdf.setTextColor(60, 65, 70);
+  pdf.setFontSize(5);
+  pdf.setFont("helvetica", "bold");
+  pdf.text("Imagen", mL + 7, y + 3);
+  pdf.text("Descripción del Producto", mL + 18, y + 3);
+  pdf.text("Cant", mL + 88, y + 3, { align: "center" });
+  pdf.text("Precio Unit.", mL + 105, y + 3, { align: "right" });
+  pdf.text("Subtotal", mL + 132, y + 3, { align: "right" });
+  return y + 5;
+};
+
 export default function Historial() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { config, loading: configLoading } = useConfig();
+
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -56,16 +174,19 @@ export default function Historial() {
     totalPages: 1,
     total: 0,
   });
-
   const [globalStats, setGlobalStats] = useState({
     totalVentas: 0,
     totalTransacciones: 0,
     porMetodo: { efectivo: 0, tarjeta: 0, transferencia: 0 },
   });
-
+  const [filteredStats, setFilteredStats] = useState({
+    totalVentas: 0,
+    totalTransacciones: 0,
+    porMetodo: { efectivo: 0, tarjeta: 0, transferencia: 0 },
+  });
   const [generatingReport, setGeneratingReport] = useState(false);
-
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+
   const [advancedFilters, setAdvancedFilters] = useState({
     startDate: new Date().toISOString().split("T")[0],
     endDate: new Date().toISOString().split("T")[0],
@@ -73,15 +194,16 @@ export default function Historial() {
     status: "",
   });
   const [activeDateFilter, setActiveDateFilter] = useState("today");
-
-  // ✅ Estados para devolución
   const [refundModal, setRefundModal] = useState(false);
   const [refundSale, setRefundSale] = useState(null);
   const [refundItems, setRefundItems] = useState({});
   const [refundReason, setRefundReason] = useState("");
   const [processingRefund, setProcessingRefund] = useState(false);
-
-  // Estados para impresión de ticket desde historial
+  const [isCreditNote, setIsCreditNote] = useState(false);
+  const [creditNoteNumber, setCreditNoteNumber] = useState("");
+  const [creditCustomerName, setCreditCustomerName] = useState("");
+  const [creditCf, setCreditCf] = useState(false);
+  const [creditFe, setCreditFe] = useState("");
   const [showTicket, setShowTicket] = useState(false);
   const [lastSale, setLastSale] = useState(null);
   const ticketRef = useRef(null);
@@ -99,629 +221,694 @@ export default function Historial() {
   };
 
   const applyDateFilter = (type) => {
-    const today = getTodayDate();
-    let start = today,
-      end = today;
-    if (type === "week") {
-      start = getWeekAgoDate();
-      end = today;
-    } else if (type === "month") {
-      start = getMonthAgoDate();
-      end = today;
-    }
+    let start = getTodayDate(),
+      end = getTodayDate();
+    if (type === "week") start = getWeekAgoDate();
+    if (type === "month") start = getMonthAgoDate();
     setActiveDateFilter(type);
-    setAdvancedFilters((prev) => ({ ...prev, startDate: start, endDate: end }));
-    setPagination((prev) => ({ ...prev, page: 1 }));
+    setAdvancedFilters((p) => ({ ...p, startDate: start, endDate: end }));
+    setPagination((p) => ({ ...p, page: 1 }));
   };
 
-  const applyTypeFilter = (type, value) => {
-    setAdvancedFilters((prev) => {
-      const newFilters = { ...prev };
-      if (type === "payment") {
-        newFilters.paymentMethod = value;
-        newFilters.status = "";
-      } else if (type === "status") {
-        newFilters.status = value;
-        newFilters.paymentMethod = "";
-      }
-      return newFilters;
-    });
-    setPagination((prev) => ({ ...prev, page: 1 }));
+  const applyTypeFilter = (type, val) => {
+    setAdvancedFilters((p) => ({
+      ...p,
+      paymentMethod: type === "payment" ? val : "",
+      status: type === "status" ? val : "",
+      startDate: p.startDate,
+      endDate: p.endDate,
+    }));
+    setPagination((p) => ({ ...p, page: 1 }));
   };
 
   const clearAdvancedFilters = () => {
-    const today = getTodayDate();
     setAdvancedFilters({
-      startDate: today,
-      endDate: today,
+      startDate: getTodayDate(),
+      endDate: getTodayDate(),
       paymentMethod: "",
       status: "",
     });
     setActiveDateFilter("today");
-    setPagination((prev) => ({ ...prev, page: 1 }));
+    setPagination((p) => ({ ...p, page: 1 }));
   };
 
-  const hasActiveAdvancedFilters =
-    advancedFilters.startDate !== getTodayDate() ||
-    advancedFilters.endDate !== getTodayDate() ||
-    advancedFilters.paymentMethod ||
-    advancedFilters.status;
+  const hasActiveFilters = useMemo(
+    () =>
+      advancedFilters.startDate !== getTodayDate() ||
+      advancedFilters.endDate !== getTodayDate() ||
+      advancedFilters.paymentMethod ||
+      advancedFilters.status,
+    [advancedFilters],
+  );
 
-  const getProductImageUrl = (imageUrl) => {
-    if (!imageUrl) return null;
-    if (imageUrl.startsWith("http")) return imageUrl;
-    return `${UPLOADS_URL}${imageUrl.startsWith("/") ? imageUrl : "/" + imageUrl}`;
-  };
+  const getProductImageUrl = useCallback(
+    (u) =>
+      u
+        ? u.startsWith("http")
+          ? u
+          : `${UPLOADS_URL}${u.startsWith("/") ? u : "/" + u}`
+        : null,
+    [],
+  );
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const baseParams = new URLSearchParams();
+      const bp = new URLSearchParams();
       if (advancedFilters.startDate)
-        baseParams.append("start", advancedFilters.startDate);
-      if (advancedFilters.endDate)
-        baseParams.append("end", advancedFilters.endDate);
+        bp.append("start", advancedFilters.startDate);
+      if (advancedFilters.endDate) bp.append("end", advancedFilters.endDate);
       if (advancedFilters.paymentMethod)
-        baseParams.append("paymentMethod", advancedFilters.paymentMethod);
-      if (advancedFilters.status)
-        baseParams.append("status", advancedFilters.status);
-
-      const pageParams = new URLSearchParams(baseParams);
-      pageParams.append("page", pagination.page);
-      pageParams.append(
+        bp.append("paymentMethod", advancedFilters.paymentMethod);
+      if (advancedFilters.status) bp.append("status", advancedFilters.status);
+      const pp = new URLSearchParams(bp);
+      pp.append("page", pagination.page);
+      pp.append(
         "limit",
         config?.appearance?.itemsPerPage || DEFAULT_ITEMS_PER_PAGE,
       );
-      const res = await api.get(`/sales?${pageParams.toString()}`);
+      const res = await api.get(`/sales?${pp.toString()}`);
       setSales(res.data.data || []);
       setPagination(
         res.data.pagination || { page: 1, totalPages: 1, total: 0 },
       );
-
-      // ✅ Estadísticas: solo ventas completadas (excluye refunded)
-      const statsParams = new URLSearchParams(baseParams);
-      statsParams.append("limit", "9999");
-      statsParams.append("status", "completed");
-      const statsRes = await api.get(`/sales?${statsParams.toString()}`);
-      const allSales = statsRes.data.data || [];
-      const totalTransacciones = allSales.length;
-      const totalVentas = allSales.reduce(
-        (sum, s) => sum + parseFloat(s.total || 0),
-        0,
-      );
-      const porMetodo = {
-        efectivo: allSales
-          .filter((s) => s.payment_method === "cash")
-          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
-        tarjeta: allSales
-          .filter((s) => s.payment_method === "card")
-          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
-        transferencia: allSales
-          .filter((s) => s.payment_method === "transfer")
-          .reduce((sum, s) => sum + parseFloat(s.total || 0), 0),
-      };
-      setGlobalStats({ totalVentas, totalTransacciones, porMetodo });
+      const sp = new URLSearchParams(bp);
+      sp.append("limit", "9999");
+      const sr = await api.get(`/sales?${sp.toString()}`);
+      const fs = sr.data.data || [];
+      setFilteredStats({
+        totalTransacciones: fs.length,
+        totalVentas: fs.reduce((s, v) => s + parseFloat(v.total || 0), 0),
+        porMetodo: {
+          efectivo: fs
+            .filter((v) => v.payment_method === "cash")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+          tarjeta: fs
+            .filter((v) => v.payment_method === "card")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+          transferencia: fs
+            .filter((v) => v.payment_method === "transfer")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+        },
+      });
+      const gp = new URLSearchParams();
+      if (advancedFilters.startDate)
+        gp.append("start", advancedFilters.startDate);
+      if (advancedFilters.endDate) gp.append("end", advancedFilters.endDate);
+      if (advancedFilters.paymentMethod)
+        gp.append("paymentMethod", advancedFilters.paymentMethod);
+      gp.append("limit", "9999");
+      gp.append("status", "completed");
+      const gr = await api.get(`/sales?${gp.toString()}`);
+      const cs = gr.data.data || [];
+      setGlobalStats({
+        totalTransacciones: cs.length,
+        totalVentas: cs.reduce((s, v) => s + parseFloat(v.total || 0), 0),
+        porMetodo: {
+          efectivo: cs
+            .filter((v) => v.payment_method === "cash")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+          tarjeta: cs
+            .filter((v) => v.payment_method === "card")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+          transferencia: cs
+            .filter((v) => v.payment_method === "transfer")
+            .reduce((s, v) => s + parseFloat(v.total || 0), 0),
+        },
+      });
       setSaleDetails({});
       setExpandedRow(null);
     } catch (err) {
-      console.error("Error cargando historial:", err);
-      setError(err.response?.data?.message || t("historial.error_loading"));
+      setError(err.response?.data?.message || "Error");
     } finally {
       setLoading(false);
     }
-  };
+  }, [pagination.page, advancedFilters, config?.appearance?.itemsPerPage]);
 
-  const loadSaleDetails = async (saleId) => {
-    if (saleDetails[saleId]) return;
-    setLoadingDetails((prev) => ({ ...prev, [saleId]: true }));
+  const loadSaleDetails = async (id) => {
+    if (saleDetails[id]) return;
+    setLoadingDetails((p) => ({ ...p, [id]: true }));
     try {
-      const res = await api.get(`/sales/${saleId}`);
-      if (res.data.success && res.data.data) {
-        setSaleDetails((prev) => ({ ...prev, [saleId]: res.data.data }));
-      }
+      const r = await api.get(`/sales/${id}`);
+      if (r.data?.success) setSaleDetails((p) => ({ ...p, [id]: r.data.data }));
     } finally {
-      setLoadingDetails((prev) => ({ ...prev, [saleId]: false }));
+      setLoadingDetails((p) => ({ ...p, [id]: false }));
     }
   };
-
-  const toggleExpand = async (saleId) => {
-    if (expandedRow === saleId) {
-      setExpandedRow(null);
-    } else {
-      setExpandedRow(saleId);
-      await loadSaleDetails(saleId);
-    }
-  };
-
+  const toggleExpand = async (id) =>
+    expandedRow === id
+      ? setExpandedRow(null)
+      : (setExpandedRow(id), await loadSaleDetails(id));
   useEffect(() => {
     if (user && !configLoading) loadData();
-  }, [pagination.page, advancedFilters, configLoading]);
-
+  }, [loadData, user, configLoading]);
   useEffect(() => {
-    setPagination((prev) => ({ ...prev, page: 1 }));
+    setPagination((p) => ({ ...p, page: 1 }));
   }, [advancedFilters]);
 
-  const formatDate = (dateStr) =>
-    new Date(dateStr).toLocaleString("es-ES", {
+  const formatDate = (d) =>
+    new Date(d).toLocaleString("es-ES", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
     });
-
-  const getProductColor = (name) => {
-    const colors = [
+  const getColor = (n) =>
+    [
       "from-blue-500 to-blue-600",
       "from-green-500 to-green-600",
       "from-purple-500 to-purple-600",
       "from-pink-500 to-pink-600",
-    ];
-    return colors[(name?.length || 0) % colors.length];
-  };
-
+    ][(n?.length || 0) % 4];
   const ProductImage = ({ imageUrl, productName }) => {
-    const [imgError, setImgError] = useState(false);
-    const colorClass = getProductColor(productName);
-    const firstLetter = productName?.charAt(0).toUpperCase() || "?";
-    if (!imageUrl || imgError) {
-      return (
-        <div
-          className={`w-14 h-14 bg-gradient-to-br ${colorClass} rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-md`}
-        >
-          {firstLetter}
-        </div>
-      );
-    }
-    return (
+    const [e, se] = useState(false);
+    const f = productName?.[0] || "?";
+    return !imageUrl || e ? (
+      <div
+        className={`w-14 h-14 bg-gradient-to-br ${getColor(productName)} rounded-xl flex items-center justify-center text-white font-bold text-xl`}
+      >
+        {f}
+      </div>
+    ) : (
       <img
         src={getProductImageUrl(imageUrl)}
         alt={productName}
-        className="w-14 h-14 object-cover rounded-xl border-2 border-gray-200 shadow-md hover:shadow-lg transition-all hover:scale-105 cursor-pointer"
-        onError={() => setImgError(true)}
+        className="w-14 h-14 object-cover rounded-xl border-2 border-gray-200 shadow-md hover:scale-105 transition"
+        onError={() => se(true)}
       />
     );
   };
 
-  // ✅ Impresión de ticket desde el historial
   const handlePrint = useReactToPrint({
     contentRef: ticketRef,
     onAfterPrint: () => {
       setShowTicket(false);
       setLastSale(null);
     },
-    onPrintError: (err) => {
-      console.error("❌ Error imprimiendo:", err);
-      Swal.fire("Error", "No se pudo imprimir el ticket", "error");
-    },
   });
-
-  const printTicket = async (saleId) => {
+  const printTicket = async (id) => {
     try {
-      const res = await api.get(`/sales/${saleId}`);
-      if (res.data?.success && res.data?.data) {
-        const saleDetail = res.data.data;
+      const r = await api.get(`/sales/${id}`);
+      if (r.data?.success) {
         setLastSale({
-          saleId: saleDetail.id,
-          total: saleDetail.total,
-          createdAt: saleDetail.createdAt,
-          paymentMethod: saleDetail.paymentMethod,
-          items: saleDetail.items.map((item) => ({
-            name: item.name,
-            quantity: item.quantity,
-            unit_price: item.unitPrice,
+          saleId: r.data.data.id,
+          total: r.data.data.total,
+          createdAt: r.data.data.createdAt,
+          paymentMethod: r.data.data.paymentMethod,
+          items: r.data.data.items.map((i) => ({
+            name: i.name,
+            quantity: i.quantity,
+            unit_price: i.unitPrice,
           })),
         });
         setShowTicket(true);
         setTimeout(() => handlePrint(), 300);
       }
-    } catch (err) {
-      console.error("Error al cargar ticket:", err);
-      Swal.fire("Error", "No se pudo cargar el ticket", "error");
+    } catch {
+      Swal.fire("Error", "No se pudo cargar ticket", "error");
     }
   };
 
-  // ✅ Funciones de devolución
   const openRefundModal = async (sale) => {
     setRefundSale(sale);
+    setIsCreditNote(false);
+    setCreditNoteNumber("");
+    setCreditCustomerName("");
+    setCreditCf(false);
+    setCreditFe("");
     try {
-      const res = await api.get(`/sales/${sale.id}`);
-      if (res.data?.success && res.data.data) {
-        const details = res.data.data;
-        if (details.items) {
-          const initial = {};
-          details.items.forEach((item) => {
-            initial[item.productId] = 0;
-          });
-          setRefundItems(initial);
-          setSaleDetails((prev) => ({ ...prev, [sale.id]: details }));
-        }
+      const r = await api.get(`/sales/${sale.id}`);
+      if (r.data?.success && r.data.data?.items) {
+        const init = {};
+        r.data.data.items.forEach((i) => (init[i.productId] = 0));
+        setRefundItems(init);
+        setSaleDetails((p) => ({ ...p, [sale.id]: r.data.data }));
       }
-    } catch (err) {
-      Swal.fire(
-        "Error",
-        "No se pudieron cargar los detalles de la venta",
-        "error",
-      );
-      setRefundModal(false);
+    } catch {
+      Swal.fire("Error", "Fallo detalles", "error");
       return;
     }
     setRefundReason("");
     setRefundModal(true);
   };
-
   const handleRefundSubmit = async () => {
     if (!refundSale) return;
-
-    const itemsToRefund = Object.entries(refundItems)
-      .filter(([_, qty]) => qty > 0)
-      .map(([productId, quantity]) => ({
-        product_id: productId,
-        quantity: parseInt(quantity),
-      }));
-
-    if (itemsToRefund.length === 0) {
-      return Swal.fire(
-        "Error",
-        "Selecciona al menos un producto para devolver",
-        "warning",
-      );
-    }
-
+    const items = Object.entries(refundItems)
+      .filter(([, q]) => q > 0)
+      .map(([pid, q]) => ({ product_id: pid, quantity: parseInt(q) }));
+    if (!items.length)
+      return Swal.fire("Atención", "Selecciona productos", "warning");
+    if (
+      isCreditNote &&
+      (!creditNoteNumber.trim() || !creditCustomerName.trim())
+    )
+      return Swal.fire("Incompleto", "Faltan datos NC", "warning");
     setProcessingRefund(true);
     try {
-      const res = await api.post("/refunds", {
+      const p = {
         sale_id: refundSale.id,
-        items: itemsToRefund,
-        reason: refundReason || "Devolución del cliente",
-      });
-
-      if (res.data.success) {
+        items,
+        reason: refundReason || "Devolución",
+      };
+      if (isCreditNote) {
+        p.credit_note_number = creditNoteNumber.trim();
+        p.customer_name = creditCustomerName.trim();
+        p.cf = creditCf;
+        p.fe = creditFe.trim() || null;
+      }
+      const r = await api.post("/refunds", p);
+      if (r.data.success) {
         Swal.fire({
           icon: "success",
-          title: "Devolución registrada",
-          text: `Se devolvieron ${itemsToRefund.length} producto(s). Total reembolsado: $${res.data.data.totalRefunded.toFixed(2)}`,
-          timer: 3000,
-          showConfirmButton: true,
+          title: isCreditNote ? "Nota Crédito" : "Devolución",
+          text: `$${r.data.data.totalRefunded.toFixed(2)}`,
         });
         setRefundModal(false);
-        loadData(); // Recargar historial y estadísticas
+        loadData();
       }
-    } catch (err) {
-      Swal.fire(
-        "Error",
-        err.response?.data?.message || "Error al procesar la devolución",
-        "error",
-      );
+    } catch (e) {
+      Swal.fire("Error", e.response?.data?.message, "error");
     } finally {
       setProcessingRefund(false);
     }
   };
 
-  // ✅ Generar PDF
   const generatePDFReport = async () => {
     setGeneratingReport(true);
     try {
       Swal.fire({
-        title: t("historial.generating"),
-        html: "Cargando datos del período filtrado",
+        title: "Generando Reporte",
+        html: "Preparando documento profesional...",
         allowOutsideClick: false,
         didOpen: () => Swal.showLoading(),
       });
-
-      const baseParams = new URLSearchParams();
+      const bp = new URLSearchParams();
       if (advancedFilters.startDate)
-        baseParams.append("start", advancedFilters.startDate);
-      if (advancedFilters.endDate)
-        baseParams.append("end", advancedFilters.endDate);
+        bp.append("start", advancedFilters.startDate);
+      if (advancedFilters.endDate) bp.append("end", advancedFilters.endDate);
       if (advancedFilters.paymentMethod)
-        baseParams.append("paymentMethod", advancedFilters.paymentMethod);
-      if (advancedFilters.status)
-        baseParams.append("status", advancedFilters.status);
-      baseParams.append("limit", MAX_REPORT_RECORDS);
-
-      const res = await api.get(`/sales?${baseParams.toString()}`);
+        bp.append("paymentMethod", advancedFilters.paymentMethod);
+      if (advancedFilters.status) bp.append("status", advancedFilters.status);
+      bp.append("limit", MAX_REPORT_RECORDS);
+      const res = await api.get(`/sales?${bp.toString()}`);
       const allSales = res.data.data || [];
-      if (allSales.length === 0) {
+      if (!allSales.length) {
         Swal.fire(
           "Sin datos",
-          "No hay ventas en el período seleccionado",
+          "No hay ventas para el período seleccionado",
           "info",
         );
+        setGeneratingReport(false);
         return;
       }
-
-      Swal.update({
-        html: `Cargando detalles de ${allSales.length} ventas...`,
-      });
-      const saleIds = allSales.map((s) => s.id);
-      const detailsPromises = saleIds.map((id) =>
-        api.get(`/sales/${id}`).catch(() => ({ data: { data: null } })),
+      const ids = allSales.map((s) => s.id);
+      const det = await Promise.all(
+        ids.map((id) =>
+          api
+            .get(`/sales/${id}`)
+            .then((r) => r.data?.data || null)
+            .catch(() => null),
+        ),
       );
-      const detailsResponses = await Promise.all(detailsPromises);
-      const allDetails = {};
-      detailsResponses.forEach((res, idx) => {
-        if (res.data?.data) allDetails[saleIds[idx]] = res.data.data;
+      const detMap = {};
+      det.forEach((r, i) => {
+        if (r) detMap[ids[i]] = r;
       });
-
-      const imageToBase64 = (url) =>
-        new Promise((resolve) => {
-          if (!url) return resolve(null);
-          const img = new Image();
-          img.crossOrigin = "Anonymous";
-          img.onload = () => {
-            const canvas = document.createElement("canvas");
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL("image/png"));
-          };
-          img.onerror = () => resolve(null);
-          img.src = getProductImageUrl(url);
-        });
-
-      const salesWithImages = await Promise.all(
-        allSales.map(async (sale) => {
-          const details = allDetails[sale.id];
-          if (!details?.items) return { ...sale, details: { items: [] } };
-          const itemsWithImages = await Promise.all(
-            details.items.map(async (item) => {
-              let imageBase64 = null;
-              if (item.image) imageBase64 = await imageToBase64(item.image);
-              return { ...item, imageBase64 };
-            }),
-          );
-          return { ...sale, details: { ...details, items: itemsWithImages } };
-        }),
-      );
-
-      const reportHTML = `
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="UTF-8">
-          <title>${escapeHtml(t("historial.generate_pdf"))}</title>
-          <style>
-            body{font-family:Arial,sans-serif;margin:20px;color:#111;background:#fff;line-height:1.4}
-            .page-break{page-break-after:always}
-            .header{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);color:#fff;padding:15px 20px;border-radius:8px;margin-bottom:15px}
-            .header h1{margin:0 0 5px;font-size:18px;font-weight:700}
-            .header p{margin:2px 0;opacity:0.95;font-size:11px}
-            .sale-card{border:1px solid #e2e8f0;border-radius:8px;margin:15px 0;overflow:hidden}
-            .sale-header{background:#f8fafc;padding:10px 15px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center}
-            .sale-header .left{display:flex;flex-direction:column;gap:2px}
-            .sale-header .right{text-align:right}
-            .sale-header .badge{display:inline-block;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600}
-            .badge-method{background:#e0e7ff;color:#3730a3}
-            .badge-status{background:#dcfce7;color:#166534}
-            .badge-status.pending{background:#fef3c7;color:#92400e}
-            .badge-status.cancelled{background:#fee2e2;color:#991b1b}
-            .badge-status.refunded{background:#f3e8ff;color:#6b21a8}
-            .operator{display:flex;align-items:center;gap:4px;font-size:11px;color:#64748b}
-            table{width:100%;border-collapse:collapse;font-size:11px}
-            th{background:#f1f5f9;padding:8px 10px;text-align:left;font-weight:600;color:#475569}
-            td{padding:8px 10px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
-            tr:last-child td{border-bottom:none}
-            .product-img{width:40px;height:40px;object-fit:cover;border-radius:5px;border:1px solid #e2e8f0}
-            .product-placeholder{width:40px;height:40px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:5px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px}
-            .sale-total{background:#f8fafc;padding:10px 15px;text-align:right;font-weight:700;color:#16a34a;font-size:13px;border-top:1px solid #e2e8f0}
-            .summary{margin-top:25px;padding-top:20px;border-top:2px solid #e2e8f0}
-            .summary-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:10px}
-            .summary-card{background:#f8fafc;border:1px solid #e2e8f0;padding:12px;border-radius:6px;text-align:center}
-            .summary-card h4{margin:0 0 4px;color:#475569;font-size:11px;text-transform:uppercase}
-            .summary-card .value{font-size:20px;font-weight:800;color:#0f172a}
-            .footer{margin-top:25px;padding-top:15px;border-top:1px solid #e2e8f0;text-align:center;color:#64748b;font-size:10px}
-            @media print{body{margin:10px}.page-break{page-break-after:always}.sale-card{break-inside:avoid}}
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>📊 ${escapeHtml(t("historial.generate_pdf"))}</h1>
-            <p><strong>${escapeHtml(t("historial.date_from"))}:</strong> ${escapeHtml(advancedFilters.startDate || "Inicio")} → ${escapeHtml(advancedFilters.endDate || "Actual")}</p>
-            <p><strong>${escapeHtml(t("historial.status"))}:</strong> ${escapeHtml(advancedFilters.status ? (advancedFilters.status === "completed" ? t("historial.completed") : advancedFilters.status === "pending" ? t("historial.pending") : t("historial.cancelled")) : t("historial.all"))}</p>
-            <p><strong>${escapeHtml(t("historial.generating"))}:</strong> ${new Date().toLocaleString("es-ES")} | ${escapeHtml(t("layout.user"))}: ${escapeHtml(user?.name || user?.email || "Sistema")}</p>
-          </div>
-          ${salesWithImages
-            .map((sale) => {
-              const details = sale.details;
-              if (!details?.items?.length) return "";
-              const methodText =
-                sale.payment_method === "cash"
-                  ? t("historial.cash")
-                  : sale.payment_method === "card"
-                    ? t("historial.card")
-                    : t("historial.transfer");
-              const statusText =
-                sale.status === "completed"
-                  ? t("historial.completed")
-                  : sale.status === "pending"
-                    ? t("historial.pending")
-                    : sale.status === "cancelled"
-                      ? t("historial.cancelled")
-                      : "Reembolsado";
-              const statusClass =
-                sale.status === "completed"
-                  ? ""
-                  : sale.status === "pending"
-                    ? " pending"
-                    : sale.status === "cancelled"
-                      ? " cancelled"
-                      : " refunded";
-              return `
-                <div class="sale-card">
-                  <div class="sale-header">
-                    <div class="left">
-                      <strong style="font-size:13px">🧾 ${escapeHtml(t("historial.detail.title"))} #${escapeHtml(sale.id.slice(0, 8))}</strong>
-                      <span style="font-size:11px;color:#64748b">${formatDate(sale.created_at)}</span>
-                      <div class="operator"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> ${escapeHtml(sale.cashier_name || "Sistema")}</div>
-                    </div>
-                    <div class="right">
-                      <span class="badge badge-method">${escapeHtml(methodText)}</span>
-                      <span class="badge badge-status${statusClass}">${escapeHtml(statusText)}</span>
-                    </div>
-                  </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th style="width:45px">${escapeHtml(t("historial.detail.image"))}</th>
-                        <th>${escapeHtml(t("historial.detail.product"))}</th>
-                        <th style="width:50px;text-align:center">${escapeHtml(t("historial.detail.quantity"))}</th>
-                        <th style="width:70px;text-align:right">${escapeHtml(t("historial.detail.unit_price"))}</th>
-                        <th style="width:70px;text-align:right">${escapeHtml(t("historial.detail.subtotal"))}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${details.items
-                        .map((item) => {
-                          const firstLetter =
-                            item.name?.charAt(0).toUpperCase() || "?";
-                          return `
-                            <tr>
-                              <td style="text-align:center">${item.imageBase64 ? `<img src="${item.imageBase64}" class="product-img" alt="${escapeHtml(item.name)}"/>` : `<div class="product-placeholder">${escapeHtml(firstLetter)}</div>`}</td>
-                              <td><div style="font-weight:600">${escapeHtml(item.name)}</div>${item.sku ? `<div style="font-size:9px;color:#64748b;margin-top:1px">SKU: ${escapeHtml(item.sku)}</div>` : ""}</td>
-                              <td style="text-align:center;font-weight:600;color:#2563eb">${item.quantity}</td>
-                              <td style="text-align:right">${item.unitPrice.toFixed(2)}</td>
-                              <td style="text-align:right;font-weight:600">${item.subtotal.toFixed(2)}</td>
-                            </tr>
-                          `;
-                        })
-                        .join("")}
-                    </tbody>
-                  </table>
-                  <div class="sale-total">${escapeHtml(t("historial.detail.total"))}: ${parseFloat(sale.total).toFixed(2)}</div>
-                </div>
-              `;
-            })
-            .join("")}
-          <div class="summary">
-            <h3 style="margin:0 0 10px;font-size:14px;color:#1e293b">📈 ${escapeHtml(t("historial.ingresos_totales"))}</h3>
-            <div class="summary-grid">
-              <div class="summary-card"><h4>${escapeHtml(t("historial.ventas_realizadas"))}</h4><div class="value">${globalStats.totalTransacciones || allSales.length}</div></div>
-              <div class="summary-card"><h4>${escapeHtml(t("historial.ingresos_totales"))}</h4><div class="value">${globalStats.totalVentas.toFixed(2)}</div></div>
-              <div class="summary-card"><h4>${escapeHtml(t("historial.efectivo"))}</h4><div class="value">${(globalStats.porMetodo?.efectivo || 0).toFixed(2)}</div></div>
-              <div class="summary-card"><h4>${escapeHtml(t("historial.tarjeta"))}</h4><div class="value">${(globalStats.porMetodo?.tarjeta || 0).toFixed(2)}</div></div>
-            </div>
-          </div>
-          <div class="footer">
-            <p>Sistema POS © ${new Date().getFullYear()} - ${escapeHtml(t("historial.generate_pdf"))}</p>
-            <p style="margin-top:5px;font-style:italic">"${escapeHtml(t("config.invoice.footer_message"))}"</p>
-          </div>
-        </body>
-        </html>
-      `;
-
-      const printWindow = window.open("", "_blank");
-      if (printWindow) {
-        printWindow.document.write(reportHTML);
-        printWindow.document.close();
-        setTimeout(() => {
-          printWindow.print();
-          printWindow.close();
-          Swal.fire({
-            icon: "success",
-            title: "✅ Reporte generado",
-            text: `Incluye ${allSales.length} ventas con productos e imágenes`,
-            timer: 2000,
-            showConfirmButton: false,
-          });
-        }, 500);
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+        compress: true,
+      });
+      const pW = pdf.internal.pageSize.getWidth(),
+        pH = pdf.internal.pageSize.getHeight();
+      const mL = 12,
+        mR = 12,
+        cW = pW - mL - mR;
+      const companyName = config?.invoice?.companyName || "MI TIENDA POS";
+      let logoB64 = null;
+      if (config?.invoice?.logo) {
+        try {
+          logoB64 = await imageToBase64(config.invoice.logo, 32, 32, 0.95);
+        } catch {}
       }
+      let y = 15;
+      pdf.setFillColor(18, 45, 80);
+      pdf.rect(0, 0, pW, 45, "F");
+      pdf.setFillColor(25, 60, 100);
+      pdf.rect(0, 0, pW, 20, "F");
+      pdf.setDrawColor(220, 180, 100);
+      pdf.setLineWidth(1.5);
+      pdf.line(0, 44, pW, 44);
+      pdf.setLineWidth(0.3);
+      pdf.line(0, 45, pW, 45);
+      if (logoB64) {
+        pdf.addImage(logoB64, "JPEG", mL, 8, 30, 30, undefined, "FAST");
+      } else {
+        pdf.setFillColor(30, 60, 95);
+        pdf.roundedRect(mL, 8, 30, 30, 3, 3, "F");
+        pdf.setDrawColor(220, 220, 220);
+        pdf.setLineWidth(0.5);
+        pdf.roundedRect(mL, 8, 30, 30, 3, 3, "D");
+        pdf.setTextColor(180, 190, 200);
+        pdf.setFontSize(6);
+        pdf.text("LOGO", mL + 15, 21, { align: "center" });
+        pdf.text("EMPRESA", mL + 15, 26, { align: "center" });
+      }
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(18);
+      pdf.setFont("helvetica", "bold");
+      pdf.text(companyName.toUpperCase(), pW / 2, 16, { align: "center" });
+      pdf.setFontSize(11);
+      pdf.setFont("helvetica", "normal");
+      pdf.setTextColor(200, 210, 220);
+      pdf.text("REPORTE DE VENTAS", pW / 2, 23, { align: "center" });
+      pdf.setFontSize(8);
+      pdf.text(
+        `${advancedFilters.startDate} y ${advancedFilters.endDate}`,
+        pW / 2,
+        29,
+        { align: "center" },
+      );
+      pdf.setFontSize(7);
+      pdf.setTextColor(180, 190, 200);
+      pdf.text(`Período de consulta`, pW / 2, 34, { align: "center" });
+      pdf.setFontSize(7);
+      pdf.setTextColor(180, 190, 200);
+      pdf.text(`Generado: ${new Date().toLocaleString("es-UY")}`, pW - mR, 12, {
+        align: "right",
+      });
+      pdf.text(`Usuario: ${user?.name || "Administrador"}`, pW - mR, 17, {
+        align: "right",
+      });
+      pdf.text(`Documento: Reporte Comercial`, pW - mR, 22, { align: "right" });
+      y = 52;
+      pdf.setFillColor(25, 55, 109);
+      pdf.roundedRect(mL, y, cW, 7, 1.5, 1.5, "F");
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(8);
+      pdf.text("RESUMEN DEL PERÍODO", mL + 4, y + 4.5);
+      y += 12;
+      const stats = advancedFilters.status ? filteredStats : globalStats;
+      const cardW = (cW - 8) / 2;
+      pdf.setFillColor(255, 255, 255);
+      pdf.roundedRect(mL, y, cardW, 20, 2, 2, "F");
+      pdf.setDrawColor(25, 55, 109);
+      pdf.setLineWidth(1.5);
+      pdf.line(mL, y, mL + cardW, y);
+      pdf.setTextColor(90, 100, 110);
+      pdf.setFontSize(6);
+      pdf.text("Total Transacciones", mL + 4, y + 6);
+      pdf.setTextColor(25, 55, 109);
+      pdf.setFontSize(15);
+      pdf.text(String(stats.totalTransacciones), mL + 4, y + 15);
+      const midX = mL + cardW + 8;
+      pdf.setFillColor(255, 255, 255);
+      pdf.roundedRect(midX, y, cardW, 20, 2, 2, "F");
+      pdf.setDrawColor(22, 163, 74);
+      pdf.setLineWidth(1.5);
+      pdf.line(midX, y, midX + cardW, y);
+      pdf.setTextColor(90, 100, 110);
+      pdf.setFontSize(6);
+      pdf.text("Ingresos Totales", midX + 4, y + 6);
+      pdf.setTextColor(22, 163, 74);
+      pdf.setFontSize(15);
+      pdf.text(`$${stats.totalVentas.toFixed(2)}`, midX + 4, y + 15);
+      y += 26;
+      pdf.setTextColor(30, 40, 50);
+      pdf.setFontSize(8);
+      pdf.text("Distribución por Método", mL, y);
+      y += 5;
+      const pd = [
+        { l: "Efectivo", v: stats.porMetodo?.efectivo || 0, c: [34, 197, 94] },
+        { l: "Tarjeta", v: stats.porMetodo?.tarjeta || 0, c: [59, 130, 246] },
+        {
+          l: "Transferencia",
+          v: stats.porMetodo?.transferencia || 0,
+          c: [168, 85, 247],
+        },
+      ];
+      const barW = 95;
+      pd.forEach((it) => {
+        const fill =
+          stats.totalVentas > 0 ? (it.v / stats.totalVentas) * barW : 0;
+        pdf.setFontSize(5.5);
+        pdf.setTextColor(50, 50, 50);
+        pdf.text(it.l, mL, y + 3);
+        pdf.setFillColor(235, 238, 240);
+        pdf.roundedRect(mL + 28, y, barW, 4, 1, 1, "F");
+        if (fill > 0) {
+          pdf.setFillColor(...it.c);
+          pdf.roundedRect(mL + 28, y, fill, 4, 1, 1, "F");
+        }
+        pdf.setTextColor(30, 40, 50);
+        pdf.text(`$${it.v.toFixed(2)}`, mL + 32 + barW + 3, y + 3);
+        pdf.setTextColor(120, 120, 120);
+        pdf.text(
+          `(${stats.totalVentas > 0 ? ((it.v / stats.totalVentas) * 100).toFixed(1) : "0.0"}%)`,
+          mL + 32 + barW + 25,
+          y + 3,
+        );
+        y += 7;
+      });
+      y += 6;
+      y = renderMainTableHeader(pdf, y, mL, mR, pW);
+      const toShow = allSales.slice(0, 150);
+      let currentPage = 1;
+      for (let i = 0; i < toShow.length; i++) {
+        const sale = toShow[i];
+        const d = detMap[sale.id];
+        const needed = d?.items ? 20 + d.items.length * 10 : 15;
+        if (y + needed > pH - 30) {
+          addPageFooter(
+            pdf,
+            currentPage,
+            Math.max(currentPage + 5, 10),
+            pW,
+            pH,
+            companyName,
+          );
+          pdf.addPage();
+          currentPage++;
+          y = 15;
+          y = renderMainTableHeader(pdf, y, mL, mR, pW);
+        }
+        const isC = sale.status === "completed";
+        const sCol = isC ? [22, 163, 74] : [249, 115, 22];
+        const sTxt = isC ? "COMPLETADA" : "REEMBOLSO";
+        const bg = i % 2 === 0 ? [255, 255, 255] : [250, 251, 252];
+        pdf.setFillColor(...bg);
+        pdf.rect(mL, y, cW, 10, "F");
+        pdf.setFillColor(...sCol);
+        pdf.rect(mL, y, 2, 10, "F");
+        pdf.setDrawColor(220, 225, 230);
+        pdf.setLineWidth(0.15);
+        pdf.line(mL, y, mL + cW, y);
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFontSize(6);
+        pdf.setFont("courier", "bold");
+        pdf.text(`#${sale.id.slice(0, 10)}`, mL + 4, y + 5.5);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(formatDate(sale.created_at), mL + 23, y + 5.5);
+        pdf.text(sale.cashier_name || "Sistema", mL + 49, y + 5.5);
+        pdf.text(
+          String(d?.items?.reduce((a, b) => a + b.quantity, 0) || 0),
+          mL + 84,
+          y + 5.5,
+          { align: "center" },
+        );
+        const mInfo = {
+          cash: { t: "Efectivo", c: [22, 163, 74] },
+          card: { t: "Tarjeta", c: [59, 130, 246] },
+          transfer: { t: "Transfer", c: [139, 92, 247] },
+        }[sale.payment_method] || { t: "N/A", c: [100, 100, 100] };
+        pdf.setTextColor(...mInfo.c);
+        pdf.text(mInfo.t, mL + 100, y + 5.5);
+        pdf.setFillColor(...sCol);
+        pdf.roundedRect(mL + 126, y + 2, 18, 5, 1.5, 1.5, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFontSize(5);
+        pdf.text(sTxt, mL + 135, y + 5, { align: "center" });
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFontSize(8);
+        pdf.text(`$${parseFloat(sale.total).toFixed(2)}`, mL + 155, y + 5.5, {
+          align: "right",
+        });
+        y += 10.5;
+        if (d?.items?.length) {
+          y = renderProductsTableHeader(pdf, y, mL, cW);
+          for (let j = 0; j < d.items.length; j++) {
+            const item = d.items[j];
+            if (y + 12 > pH - 25) {
+              addPageFooter(
+                pdf,
+                currentPage,
+                currentPage + 5,
+                pW,
+                pH,
+                companyName,
+              );
+              pdf.addPage();
+              currentPage++;
+              y = 15;
+              y = renderMainTableHeader(pdf, y, mL, mR, pW);
+            }
+            pdf.setFillColor(255, 255, 255);
+            pdf.rect(mL + 5, y, cW - 5, 10, "F");
+            pdf.setDrawColor(230, 232, 235);
+            pdf.setLineWidth(0.15);
+            pdf.line(mL + 5, y, mL + cW, y);
+            pdf.line(mL + 5, y + 10, mL + cW, y + 10);
+            if (item.image) {
+              try {
+                const u = getProductImageUrl(item.image);
+                const b = await imageToBase64(u, 55, 55, 0.95);
+                if (b) {
+                  pdf.addImage(
+                    b,
+                    "JPEG",
+                    mL + 6,
+                    y + 0.5,
+                    9,
+                    9,
+                    undefined,
+                    "FAST",
+                  );
+                  pdf.setDrawColor(180, 185, 190);
+                  pdf.setLineWidth(0.2);
+                  pdf.rect(mL + 6, y + 0.5, 9, 9, "D");
+                }
+              } catch {
+                pdf.setFillColor(240, 242, 245);
+                pdf.rect(mL + 6, y + 0.5, 9, 9, "F");
+              }
+            } else {
+              pdf.setFillColor(230, 232, 235);
+              pdf.roundedRect(mL + 6, y + 0.5, 9, 9, 1, 1, "F");
+              pdf.setTextColor(120, 125, 130);
+              pdf.setFontSize(6);
+              pdf.text(
+                (item.name?.[0] || "?").toUpperCase(),
+                mL + 10.5,
+                y + 5.5,
+                { align: "center" },
+              );
+            }
+            pdf.setTextColor(30, 40, 50);
+            pdf.setFontSize(5.5);
+            pdf.text(
+              (item.name || "").length > 40
+                ? item.name.substring(0, 37) + "..."
+                : item.name,
+              mL + 17,
+              y + 4,
+            );
+            if (item.sku) {
+              pdf.setTextColor(140, 145, 150);
+              pdf.setFontSize(4.5);
+              pdf.text(`SKU: ${item.sku}`, mL + 17, y + 7);
+            }
+            pdf.setFont("helvetica", "bold");
+            pdf.text(String(item.quantity), mL + 88, y + 4, {
+              align: "center",
+            });
+            pdf.text(`$${(item.unitPrice || 0).toFixed(2)}`, mL + 105, y + 4, {
+              align: "right",
+            });
+            pdf.text(
+              `$${((item.quantity || 0) * (item.unitPrice || 0)).toFixed(2)}`,
+              mL + 132,
+              y + 4,
+              { align: "right" },
+            );
+            y += 10;
+          }
+        }
+        pdf.setDrawColor(60, 70, 80);
+        pdf.setLineWidth(0.4);
+        pdf.line(mL, y, mL + cW, y);
+        pdf.setLineWidth(0.1);
+        pdf.setDrawColor(200, 205, 210);
+        y += 4;
+      }
+      const totalP = pdf.internal.getNumberOfPages();
+      for (let p = 1; p <= totalP; p++) {
+        pdf.setPage(p);
+        addPageFooter(pdf, p, totalP, pW, pH, companyName);
+      }
+      pdf.setProperties({
+        title: `Reporte ${companyName}`,
+        author: user?.name || "POS",
+        creator: "POS Pro",
+      });
+      pdf.save(
+        `${companyName.replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.pdf`,
+      );
+      Swal.fire({
+        icon: "success",
+        title: "PDF Generado",
+        text: `${toShow.length} ventas incluidas`,
+        timer: 2500,
+        showConfirmButton: false,
+      });
     } catch (err) {
-      console.error("❌ Error generando reporte:", err);
-      Swal.fire("Error", "No se pudo generar el reporte", "error");
+      console.error("ERR PDF:", err);
+      Swal.fire({ icon: "error", title: "Error", text: err.message });
     } finally {
       setGeneratingReport(false);
     }
   };
 
-  // ✅ Exportar a CSV
   const exportToCSV = () => {
     if (!sales.length) return;
-    const headers = [
-      "ID",
-      "Fecha",
-      "Operador",
-      "Productos",
-      "Cantidad Total",
-      "Total",
-      "Método Pago",
-      "Estado",
-    ];
-    const rows = sales.map((s) => {
-      const details = saleDetails[s.id];
-      const productos =
-        details?.items
-          ?.map((item) => `${item.name} x${item.quantity}`)
-          .join("; ") || "";
-      const totalCantidad =
-        details?.items?.reduce((sum, item) => sum + (item.quantity || 0), 0) ||
-        s.items_count ||
-        0;
-      return [
-        s.id.slice(0, 8),
-        formatDate(s.created_at),
-        s.cashier_name || "N/A",
-        productos,
-        totalCantidad,
-        parseFloat(s.total || 0).toFixed(2),
-        s.payment_method === "cash"
-          ? t("historial.cash")
-          : s.payment_method === "card"
-            ? t("historial.card")
-            : t("historial.transfer"),
-        s.status === "completed"
-          ? t("historial.completed")
-          : s.status === "cancelled"
-            ? t("historial.cancelled")
-            : s.status === "refunded"
-              ? "Reembolsado"
-              : t("historial.pending"),
-      ];
-    });
-    const csvContent = [headers, ...rows]
-      .map((row) => row.join(","))
-      .join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const h = ["ID", "Fecha", "Cajero", "Total", "Método", "Estado"];
+    const r = sales.map((s) => [
+      s.id.slice(0, 8),
+      formatDate(s.created_at),
+      s.cashier_name || "N/A",
+      parseFloat(s.total || 0).toFixed(2),
+      { cash: "Efectivo", card: "Tarjeta", transfer: "Transfer" }[
+        s.payment_method
+      ],
+      { completed: "Completada", refunded: "Reembolsado" }[s.status],
+    ]);
     const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute(
-      "download",
-      `historial_ventas_${new Date().toISOString().split("T")[0]}.csv`,
+    link.href = URL.createObjectURL(
+      new Blob([h.join(",") + "\n" + r.map((x) => x.join(",")).join("\n")], {
+        type: "text/csv",
+      }),
     );
+    link.download = `ventas_${new Date().toISOString().split("T")[0]}.csv`;
     link.click();
-    URL.revokeObjectURL(url);
   };
 
-  if (loading && sales.length === 0)
+  if (loading && !sales.length)
     return <LoaderPOS message={t("historial.loading")} />;
-
-  if (error && !loading) {
+  if (error && !loading)
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-center p-4">
+      <div className="flex flex-col items-center justify-center h-64 p-4">
         <AlertCircle className="text-amber-500 mb-4" size={48} />
-        <h3 className="text-lg font-bold text-gray-900 mb-2">
-          {t("historial.error_loading")}
-        </h3>
-        <p className="text-gray-600 mb-4 max-w-md">{error}</p>
+        <h3 className="text-lg font-bold text-gray-900 mb-2">Error</h3>
+        <p className="text-gray-600 mb-4">{error}</p>
         <button
           onClick={loadData}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
         >
-          {t("historial.retry")}
+          Reintentar
         </button>
       </div>
     );
-  }
+
+  const dStats = advancedFilters.status ? filteredStats : globalStats;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <History className="text-blue-600" size={28} />{" "}
+            <History className="text-blue-600" size={28} />
             {t("historial.title")}
           </h1>
           <p className="text-gray-500 text-sm mt-1">
@@ -733,43 +920,41 @@ export default function Historial() {
         <div className="flex gap-2">
           <button
             onClick={exportToCSV}
-            disabled={sales.length === 0}
-            className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 disabled:opacity-50"
+            disabled={!sales.length}
+            className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 disabled:opacity-50 transition"
           >
-            <Download size={16} /> {t("historial.export_csv")}
+            <Download size={16} />
+            CSV
           </button>
           <button
             onClick={generatePDFReport}
-            disabled={generatingReport || sales.length === 0}
-            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center gap-2 disabled:opacity-50"
+            disabled={generatingReport || !sales.length}
+            className="bg-gradient-to-r from-red-600 to-red-700 text-white px-4 py-2 rounded-lg hover:from-red-700 hover:to-red-800 flex items-center gap-2 disabled:opacity-50 transition shadow-md"
           >
             {generatingReport ? (
-              t("historial.generating")
+              <>
+                <RefreshCw size={16} className="animate-spin" />
+                Generando...
+              </>
             ) : (
-              <FileText size={16} />
-            )}{" "}
-            {t("historial.generate_pdf")}
+              <>
+                <FileText size={16} />
+                PDF
+              </>
+            )}
           </button>
         </div>
       </div>
-
-      {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
         <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl shadow-lg p-6 text-white">
           <div className="flex justify-between items-start">
             <div>
               <p className="text-blue-100 text-sm font-medium">
-                {t("historial.ventas_realizadas")}
+                Transacciones {advancedFilters.status ? "(Filtrado)" : ""}
               </p>
               <p className="text-4xl font-bold mt-2">
-                {globalStats.totalTransacciones}
+                {dStats.totalTransacciones}
               </p>
-              <div className="flex items-center gap-1 mt-3 text-blue-100">
-                <ArrowUpRight size={16} />
-                <span className="text-sm">
-                  {t("historial.total_transacciones")}
-                </span>
-              </div>
             </div>
             <div className="bg-white/20 p-3 rounded-xl">
               <TrendingUp size={28} />
@@ -780,317 +965,260 @@ export default function Historial() {
           <div className="flex justify-between items-start">
             <div>
               <p className="text-green-100 text-sm font-medium">
-                {t("historial.ingresos_totales")}
+                Ingresos {advancedFilters.status ? "(Filtrado)" : ""}
               </p>
               <p className="text-4xl font-bold mt-2">
-                <MoneyDisplay amount={globalStats.totalVentas} />
+                <MoneyDisplay amount={dStats.totalVentas} />
               </p>
-              <div className="flex items-center gap-1 mt-3 text-green-100">
-                <ArrowUpRight size={16} />
-                <span className="text-sm">
-                  {t("historial.total_recaudado")}
-                </span>
-              </div>
             </div>
             <div className="bg-white/20 p-3 rounded-xl">
               <DollarSign size={28} />
             </div>
           </div>
           <div className="mt-4 pt-4 border-t border-white/20">
-            <div className="flex justify-between text-sm">
-              <div className="flex items-center gap-2">
-                <CreditCard size={12} />
-                <span>{t("historial.tarjeta")}</span>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="flex items-center gap-1">
+                <Banknote size={12} />
+                <span>Efectivo</span>
                 <span className="font-semibold">
-                  <MoneyDisplay amount={globalStats.porMetodo?.tarjeta} />
+                  <MoneyDisplay amount={dStats.porMetodo.efectivo} />
                 </span>
               </div>
-              <div className="flex items-center gap-2">
-                <Landmark size={12} />
-                <span>{t("historial.efectivo")}</span>
+              <div className="flex items-center gap-1">
+                <CreditCard size={12} />
+                <span>Tarjeta</span>
                 <span className="font-semibold">
-                  <MoneyDisplay amount={globalStats.porMetodo?.efectivo} />
+                  <MoneyDisplay amount={dStats.porMetodo.tarjeta} />
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                <Landmark size={12} />
+                <span>Transfer</span>
+                <span className="font-semibold">
+                  <MoneyDisplay amount={dStats.porMetodo.transferencia} />
                 </span>
               </div>
             </div>
           </div>
         </div>
       </div>
-
-      {/* Filtros */}
       <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-            className="flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition"
           >
-            <SlidersHorizontal size={16} /> {t("historial.filters_advanced")}{" "}
-            {hasActiveAdvancedFilters && (
-              <span className="ml-1 w-2 h-2 bg-blue-500 rounded-full" />
+            <SlidersHorizontal size={16} />
+            Filtros{" "}
+            {hasActiveFilters && (
+              <span className="ml-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
             )}
           </button>
           <button
             onClick={loadData}
-            className="p-2 text-gray-500 hover:text-gray-700"
-            title="Actualizar"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
           >
             <RefreshCw size={18} />
           </button>
         </div>
-
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => applyDateFilter("today")}
-            className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
-              activeDateFilter === "today"
-                ? "bg-blue-600 text-white shadow-md"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
+            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${activeDateFilter === "today" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
           >
-            <Calendar size={16} /> {t("historial.today")}
+            <Calendar size={16} />
+            Hoy
           </button>
           <button
             onClick={() => applyDateFilter("week")}
-            className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
-              activeDateFilter === "week"
-                ? "bg-blue-600 text-white shadow-md"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
+            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${activeDateFilter === "week" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
           >
-            <Calendar size={16} /> {t("historial.this_week")}
+            <Calendar size={16} />
+            Semana
           </button>
           <button
             onClick={() => applyDateFilter("month")}
-            className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
-              activeDateFilter === "month"
-                ? "bg-blue-600 text-white shadow-md"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
+            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${activeDateFilter === "month" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
           >
-            <Calendar size={16} /> {t("historial.this_month")}
+            <Calendar size={16} />
+            Mes
           </button>
         </div>
-
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => applyTypeFilter("payment", "")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              !advancedFilters.paymentMethod && !advancedFilters.status
-                ? "bg-blue-500 text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${!advancedFilters.paymentMethod && !advancedFilters.status ? "bg-blue-500 text-white shadow" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
           >
-            {t("historial.all")}
+            Todos
           </button>
           <button
             onClick={() => applyTypeFilter("payment", "cash")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.paymentMethod === "cash"
-                ? "bg-green-500 text-white"
-                : "bg-green-100 text-green-700 hover:bg-green-200"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${advancedFilters.paymentMethod === "cash" ? "bg-green-500 text-white shadow" : "bg-green-100 text-green-700 hover:bg-green-200"}`}
           >
-            {t("historial.cash")}
+            Efectivo
           </button>
           <button
             onClick={() => applyTypeFilter("payment", "card")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.paymentMethod === "card"
-                ? "bg-blue-500 text-white"
-                : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${advancedFilters.paymentMethod === "card" ? "bg-blue-500 text-white shadow" : "bg-blue-100 text-blue-700 hover:bg-blue-200"}`}
           >
-            {t("historial.card")}
+            Tarjeta
           </button>
           <button
             onClick={() => applyTypeFilter("payment", "transfer")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.paymentMethod === "transfer"
-                ? "bg-purple-500 text-white"
-                : "bg-purple-100 text-purple-700 hover:bg-purple-200"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${advancedFilters.paymentMethod === "transfer" ? "bg-purple-500 text-white shadow" : "bg-purple-100 text-purple-700 hover:bg-purple-200"}`}
           >
-            {t("historial.transfer")}
+            Transfer
           </button>
           <button
             onClick={() => applyTypeFilter("status", "completed")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.status === "completed"
-                ? "bg-emerald-500 text-white"
-                : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${advancedFilters.status === "completed" ? "bg-emerald-500 text-white shadow" : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"}`}
           >
-            {t("historial.completed")}
+            Completadas
           </button>
           <button
-            onClick={() => applyTypeFilter("status", "pending")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.status === "pending"
-                ? "bg-yellow-500 text-white"
-                : "bg-yellow-100 text-yellow-700 hover:bg-yellow-200"
-            }`}
+            onClick={() => applyTypeFilter("status", "refunded")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${advancedFilters.status === "refunded" ? "bg-orange-500 text-white shadow" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
           >
-            {t("historial.pending")}
-          </button>
-          <button
-            onClick={() => applyTypeFilter("status", "cancelled")}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              advancedFilters.status === "cancelled"
-                ? "bg-red-500 text-white"
-                : "bg-red-100 text-red-700 hover:bg-red-200"
-            }`}
-          >
-            {t("historial.cancelled")}
+            Reembolsos
           </button>
         </div>
-
         {showAdvancedFilters && (
           <div className="pt-3 border-t border-gray-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="text-xs font-medium text-gray-500 flex items-center gap-1">
-                <Calendar size={12} /> {t("historial.date_from")}
-              </label>
+              <label className="text-xs font-medium text-gray-500">Desde</label>
               <input
                 type="date"
-                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                className="w-full mt-1 px-3 py-1.5 text-sm border rounded-lg"
                 value={advancedFilters.startDate}
                 onChange={(e) => {
-                  setAdvancedFilters({
-                    ...advancedFilters,
+                  setAdvancedFilters((p) => ({
+                    ...p,
                     startDate: e.target.value,
-                  });
-                  setActiveDateFilter(null);
-                  setPagination((prev) => ({ ...prev, page: 1 }));
+                  }));
+                  setPagination((p) => ({ ...p, page: 1 }));
                 }}
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 flex items-center gap-1">
-                <Calendar size={12} /> {t("historial.date_to")}
-              </label>
+              <label className="text-xs font-medium text-gray-500">Hasta</label>
               <input
                 type="date"
-                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                className="w-full mt-1 px-3 py-1.5 text-sm border rounded-lg"
                 value={advancedFilters.endDate}
                 onChange={(e) => {
-                  setAdvancedFilters({
-                    ...advancedFilters,
+                  setAdvancedFilters((p) => ({
+                    ...p,
                     endDate: e.target.value,
-                  });
-                  setActiveDateFilter(null);
-                  setPagination((prev) => ({ ...prev, page: 1 }));
+                  }));
+                  setPagination((p) => ({ ...p, page: 1 }));
                 }}
               />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500">
-                {t("historial.payment_method")}
+                Método
               </label>
               <select
-                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                className="w-full mt-1 px-3 py-1.5 text-sm border rounded-lg"
                 value={advancedFilters.paymentMethod}
                 onChange={(e) => {
-                  setAdvancedFilters({
-                    ...advancedFilters,
+                  setAdvancedFilters((p) => ({
+                    ...p,
                     paymentMethod: e.target.value,
                     status: "",
-                  });
-                  setPagination((prev) => ({ ...prev, page: 1 }));
+                  }));
+                  setPagination((p) => ({ ...p, page: 1 }));
                 }}
               >
-                <option value="">{t("historial.all")}</option>
-                <option value="cash">{t("historial.cash")}</option>
-                <option value="card">{t("historial.card")}</option>
-                <option value="transfer">{t("historial.transfer")}</option>
+                <option value="">Todos</option>
+                <option value="cash">Efectivo</option>
+                <option value="card">Tarjeta</option>
+                <option value="transfer">Transfer</option>
               </select>
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500">
-                {t("historial.status")}
+                Estado
               </label>
               <select
-                className="w-full mt-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg"
+                className="w-full mt-1 px-3 py-1.5 text-sm border rounded-lg"
                 value={advancedFilters.status}
                 onChange={(e) => {
-                  setAdvancedFilters({
-                    ...advancedFilters,
+                  setAdvancedFilters((p) => ({
+                    ...p,
                     status: e.target.value,
                     paymentMethod: "",
-                  });
-                  setPagination((prev) => ({ ...prev, page: 1 }));
+                  }));
+                  setPagination((p) => ({ ...p, page: 1 }));
                 }}
               >
-                <option value="">{t("historial.all")}</option>
-                <option value="completed">{t("historial.completed")}</option>
-                <option value="pending">{t("historial.pending")}</option>
-                <option value="cancelled">{t("historial.cancelled")}</option>
+                <option value="">Todos</option>
+                <option value="completed">Completadas</option>
+                <option value="refunded">Reembolsos</option>
               </select>
             </div>
-            {hasActiveAdvancedFilters && (
+            {hasActiveFilters && (
               <div className="sm:col-span-2 lg:col-span-4 flex justify-end">
                 <button
                   onClick={clearAdvancedFilters}
-                  className="text-sm text-blue-600 hover:underline"
+                  className="text-sm text-blue-600 hover:underline font-medium"
                 >
-                  {t("historial.clear_filters")}
+                  Limpiar filtros
                 </button>
               </div>
             )}
           </div>
         )}
       </div>
-
-      {/* Tabla de ventas */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        {sales.length === 0 ? (
+        {!sales.length ? (
           <div className="text-center py-12">
             <History className="mx-auto text-gray-300 mb-4" size={48} />
             <p className="text-gray-500 font-medium">
-              {hasActiveAdvancedFilters
-                ? t("historial.no_sales")
-                : t("historial.no_sales_registered")}
+              {hasActiveFilters
+                ? "Sin resultados con estos filtros"
+                : "No hay ventas"}
             </p>
+            {hasActiveFilters && (
+              <button
+                onClick={clearAdvancedFilters}
+                className="mt-4 text-blue-600 hover:underline text-sm"
+              >
+                Limpiar
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50">
-                <tr className="text-left text-xs font-medium text-gray-500 uppercase">
+                <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <th className="w-10 px-6 py-3"></th>
-                  <th className="px-6 py-3">{t("historial.columns.id")}</th>
-                  <th className="px-6 py-3">
-                    {t("historial.columns.operator")}
-                  </th>
-                  <th className="px-6 py-3">{t("historial.columns.total")}</th>
-                  <th className="px-6 py-3">{t("historial.columns.method")}</th>
-                  <th className="px-6 py-3">{t("historial.columns.status")}</th>
-                  <th className="px-6 py-3 text-center">
-                    {t("historial.columns.quantity")}
-                  </th>
-                  <th className="px-6 py-3">{t("historial.columns.date")}</th>
-                  <th className="px-6 py-3 text-center">
-                    {t("historial.columns.action")}
-                  </th>
+                  <th className="px-6 py-3">ID</th>
+                  <th className="px-6 py-3">Cajero</th>
+                  <th className="px-6 py-3">Total</th>
+                  <th className="px-6 py-3">Método</th>
+                  <th className="px-6 py-3">Estado</th>
+                  <th className="px-6 py-3 text-center">Items</th>
+                  <th className="px-6 py-3">Fecha</th>
+                  <th className="px-6 py-3 text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {sales.map((s) => {
-                  const saleDetail = saleDetails[s.id];
-                  const isLoadingDetails = loadingDetails[s.id];
-                  const totalCantidad =
-                    saleDetail?.items?.reduce(
-                      (sum, item) => sum + (item.quantity || 0),
-                      0,
-                    ) ||
+                  const d = saleDetails[s.id];
+                  const ld = loadingDetails[s.id];
+                  const tq =
+                    d?.items?.reduce((a, b) => a + b.quantity, 0) ||
                     s.items_count ||
                     0;
                   return (
                     <Fragment key={s.id}>
-                      <tr className="hover:bg-gray-50 transition-colors">
+                      <tr className="hover:bg-gray-50 transition">
                         <td className="px-6 py-4 text-center">
                           <button
                             onClick={() => toggleExpand(s.id)}
-                            className="hover:bg-gray-200 p-1 rounded transition-colors"
+                            className="hover:bg-gray-200 p-1 rounded transition"
                           >
                             {expandedRow === s.id ? (
                               <ChevronUp size={16} className="text-gray-600" />
@@ -1108,7 +1236,7 @@ export default function Historial() {
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-2">
                             <User size={14} className="text-gray-400" />
-                            <span className="text-sm font-medium text-gray-800">
+                            <span className="text-sm font-medium">
                               {s.cashier_name || "Sistema"}
                             </span>
                           </div>
@@ -1118,48 +1246,26 @@ export default function Historial() {
                         </td>
                         <td className="px-6 py-4">
                           <span className="flex items-center gap-1 text-sm">
-                            {s.payment_method === "cash" && (
-                              <DollarSign
-                                size={14}
-                                className="text-green-600"
-                              />
-                            )}
-                            {s.payment_method === "card" && (
-                              <CreditCard size={14} className="text-blue-600" />
-                            )}
-                            {s.payment_method === "transfer" && (
-                              <Landmark size={14} className="text-purple-600" />
-                            )}
                             {s.payment_method === "cash"
-                              ? t("historial.cash")
+                              ? "Efectivo"
                               : s.payment_method === "card"
-                                ? t("historial.card")
-                                : t("historial.transfer")}
+                                ? "Tarjeta"
+                                : "Transfer"}
                           </span>
                         </td>
                         <td className="px-6 py-4">
                           <span
-                            className={`px-2 py-1 text-xs rounded-full ${
-                              s.status === "completed"
-                                ? "bg-green-100 text-green-800"
-                                : s.status === "cancelled"
-                                  ? "bg-red-100 text-red-800"
-                                  : s.status === "refunded"
-                                    ? "bg-purple-100 text-purple-800"
-                                    : "bg-yellow-100 text-yellow-800"
-                            }`}
+                            className={`px-2 py-0.5 text-xs rounded-full font-medium ${s.status === "completed" ? "bg-green-100 text-green-800" : s.status === "refunded" ? "bg-orange-100 text-orange-800" : "bg-yellow-100 text-yellow-800"}`}
                           >
                             {s.status === "completed"
-                              ? t("historial.completed")
-                              : s.status === "cancelled"
-                                ? t("historial.cancelled")
-                                : s.status === "refunded"
-                                  ? "Reembolsado"
-                                  : t("historial.pending")}
+                              ? "Completada"
+                              : s.status === "refunded"
+                                ? "Reembolsado"
+                                : "Pendiente"}
                           </span>
                         </td>
                         <td className="px-6 py-4 text-sm text-center font-bold text-blue-600">
-                          {totalCantidad}
+                          {tq}
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-600">
                           {formatDate(s.created_at)}
@@ -1168,19 +1274,18 @@ export default function Historial() {
                           <div className="flex gap-2 justify-center">
                             <button
                               onClick={() => printTicket(s.id)}
-                              className="bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 flex items-center gap-1 transition-colors text-sm"
-                              title={t("historial.print_ticket")}
+                              className="bg-blue-600 text-white p-1.5 rounded-lg hover:bg-blue-700 transition"
+                              title="Ticket"
                             >
-                              <Printer size={14} />{" "}
-                              {t("historial.print_ticket")}
+                              <Printer size={14} />
                             </button>
                             {s.status === "completed" && (
                               <button
                                 onClick={() => openRefundModal(s)}
-                                className="bg-orange-600 text-white px-3 py-1.5 rounded-lg hover:bg-orange-700 flex items-center gap-1 transition-colors text-sm"
-                                title="Devolver productos"
+                                className="bg-orange-600 text-white p-1.5 rounded-lg hover:bg-orange-700 transition"
+                                title="Devolver"
                               >
-                                <ArrowDownRight size={14} /> Devolver
+                                <ArrowDownRight size={14} />
                               </button>
                             )}
                           </div>
@@ -1190,124 +1295,73 @@ export default function Historial() {
                         <tr className="bg-gray-50">
                           <td colSpan={9} className="px-6 py-4">
                             <div className="ml-8">
-                              <div className="flex items-center gap-2 mb-4">
-                                <Package size={18} className="text-blue-500" />
-                                <h4 className="font-semibold text-gray-700 text-lg">
-                                  {t("historial.detail.title")}
+                              <div className="flex items-center gap-2 mb-3">
+                                <Package size={16} className="text-blue-500" />
+                                <h4 className="font-semibold text-gray-700">
+                                  Detalle
                                 </h4>
-                                <span className="text-sm text-gray-500">
-                                  ({t("historial.detail.total_units")}{" "}
-                                  {totalCantidad})
-                                </span>
                               </div>
-                              {isLoadingDetails ? (
-                                <div className="flex justify-center py-8">
-                                  <span className="text-gray-600">
-                                    {t("historial.detail.loading_details")}
-                                  </span>
+                              {ld ? (
+                                <div className="py-4 text-gray-600">
+                                  Cargando...
                                 </div>
-                              ) : saleDetail?.items ? (
+                              ) : d?.items ? (
                                 <div className="overflow-x-auto">
                                   <table className="min-w-full text-sm">
                                     <thead>
-                                      <tr className="border-b-2 border-gray-200 bg-gray-100">
-                                        <th className="text-left py-3 px-4 text-gray-600 font-semibold">
-                                          {t("historial.detail.image")}
+                                      <tr className="border-b border-gray-200">
+                                        <th className="text-left py-2 px-3 text-gray-600 font-semibold">
+                                          Producto
                                         </th>
-                                        <th className="text-left py-3 px-4 text-gray-600 font-semibold">
-                                          {t("historial.detail.product")}
+                                        <th className="text-center py-2 px-3 text-gray-600 font-semibold">
+                                          Cant.
                                         </th>
-                                        <th className="text-center py-3 px-4 text-gray-600 font-semibold">
-                                          {t("historial.detail.quantity")}
+                                        <th className="text-right py-2 px-3 text-gray-600 font-semibold">
+                                          P.Unit
                                         </th>
-                                        <th className="text-right py-3 px-4 text-gray-600 font-semibold">
-                                          {t("historial.detail.unit_price")}
-                                        </th>
-                                        <th className="text-right py-3 px-4 text-gray-600 font-semibold">
-                                          {t("historial.detail.subtotal")}
+                                        <th className="text-right py-2 px-3 text-gray-600 font-semibold">
+                                          Subtotal
                                         </th>
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {saleDetail.items.map((item, idx) => (
+                                      {d.items.map((it, idx) => (
                                         <tr
                                           key={idx}
-                                          className="border-b border-gray-100 hover:bg-gray-50 transition-colors"
+                                          className="border-b border-gray-100"
                                         >
-                                          <td className="py-3 px-4">
-                                            <ProductImage
-                                              imageUrl={item.image}
-                                              productName={item.name}
-                                            />
-                                          </td>
-                                          <td className="py-3 px-4">
-                                            <div className="flex flex-col">
-                                              <span className="font-medium text-gray-800">
-                                                {item.name}
+                                          <td className="py-2 px-3">
+                                            <div className="flex items-center gap-2">
+                                              <ProductImage
+                                                imageUrl={it.image}
+                                                productName={it.name}
+                                              />
+                                              <span className="font-medium">
+                                                {it.name}
                                               </span>
-                                              {item.sku && (
-                                                <span className="text-xs text-gray-400 mt-1">
-                                                  SKU: {item.sku}
-                                                </span>
-                                              )}
                                             </div>
                                           </td>
-                                          <td className="text-center py-3 px-4">
-                                            <span className="font-bold text-blue-600 text-lg">
-                                              {item.quantity}
-                                            </span>
+                                          <td className="text-center py-2 px-3 font-bold">
+                                            {it.quantity}
                                           </td>
-                                          <td className="text-right py-3 px-4 text-gray-700">
+                                          <td className="text-right py-2 px-3">
                                             <MoneyDisplay
-                                              amount={item.unitPrice}
+                                              amount={it.unitPrice}
                                             />
                                           </td>
-                                          <td className="text-right py-3 px-4">
-                                            <span className="font-semibold text-gray-800">
-                                              <MoneyDisplay
-                                                amount={item.subtotal}
-                                              />
-                                            </span>
+                                          <td className="text-right py-2 px-3 font-semibold">
+                                            <MoneyDisplay
+                                              amount={it.subtotal}
+                                            />
                                           </td>
                                         </tr>
                                       ))}
                                     </tbody>
-                                    <tfoot>
-                                      <tr className="border-t-2 border-gray-200 bg-gray-100">
-                                        <td
-                                          colSpan="2"
-                                          className="py-3 px-4 text-right font-bold text-gray-700"
-                                        >
-                                          {t(
-                                            "historial.detail.total_units_footer",
-                                          )}
-                                        </td>
-                                        <td className="py-3 px-4 text-center">
-                                          <span className="font-bold text-blue-600 text-lg">
-                                            {totalCantidad}
-                                          </span>
-                                        </td>
-                                        <td className="py-3 px-4 text-right font-bold text-gray-700">
-                                          {t("historial.detail.total")}
-                                        </td>
-                                        <td className="py-3 px-4 text-right">
-                                          <span className="font-bold text-green-700 text-xl">
-                                            <MoneyDisplay
-                                              amount={saleDetail.total}
-                                            />
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    </tfoot>
                                   </table>
                                 </div>
                               ) : (
-                                <div className="text-center py-8 text-gray-500">
-                                  <AlertCircle
-                                    className="mx-auto mb-2"
-                                    size={32}
-                                  />
-                                  {t("historial.detail.error_details")}
+                                <div className="py-4 text-gray-500">
+                                  Sin detalles
                                 </div>
                               )}
                             </div>
@@ -1321,45 +1375,38 @@ export default function Historial() {
             </table>
           </div>
         )}
-
         {pagination.totalPages > 1 && (
           <div className="flex justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
             <div className="text-sm text-gray-600">
-              {t("historial.pagination.showing")} {sales.length}{" "}
-              {t("historial.pagination.of")} {pagination.total}{" "}
-              {t("historial.pagination.records")}
+              {sales.length} de {pagination.total}
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
               <button
                 disabled={pagination.page === 1}
                 onClick={() =>
-                  setPagination((prev) => ({ ...prev, page: prev.page - 1 }))
+                  setPagination((p) => ({ ...p, page: p.page - 1 }))
                 }
-                className="px-4 py-2 text-gray-600 disabled:opacity-50 hover:bg-gray-100 rounded-lg flex items-center gap-1"
+                className="px-3 py-1.5 text-gray-600 disabled:opacity-50 hover:bg-gray-100 rounded-lg transition flex items-center gap-1"
               >
-                <ChevronLeft size={18} /> {t("historial.pagination.previous")}
+                <ChevronLeft size={16} />
               </button>
               <div className="flex gap-1">
                 {[...Array(Math.min(5, pagination.totalPages))].map((_, i) => {
-                  let pageNum;
-                  if (pagination.totalPages <= 5) pageNum = i + 1;
-                  else if (pagination.page <= 3) pageNum = i + 1;
-                  else if (pagination.page >= pagination.totalPages - 2)
-                    pageNum = pagination.totalPages - 4 + i;
-                  else pageNum = pagination.page - 2 + i;
+                  let pn =
+                    pagination.totalPages <= 5
+                      ? i + 1
+                      : pagination.page <= 3
+                        ? i + 1
+                        : pagination.page >= pagination.totalPages - 2
+                          ? pagination.totalPages - 4 + i
+                          : pagination.page - 2 + i;
                   return (
                     <button
-                      key={pageNum}
-                      onClick={() =>
-                        setPagination((prev) => ({ ...prev, page: pageNum }))
-                      }
-                      className={`px-3 py-1 rounded-lg ${
-                        pagination.page === pageNum
-                          ? "bg-blue-600 text-white"
-                          : "text-gray-600 hover:bg-gray-100"
-                      }`}
+                      key={pn}
+                      onClick={() => setPagination((p) => ({ ...p, page: pn }))}
+                      className={`px-3 py-1.5 rounded-lg transition ${pagination.page === pn ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}
                     >
-                      {pageNum}
+                      {pn}
                     </button>
                   );
                 })}
@@ -1367,18 +1414,16 @@ export default function Historial() {
               <button
                 disabled={pagination.page === pagination.totalPages}
                 onClick={() =>
-                  setPagination((prev) => ({ ...prev, page: prev.page + 1 }))
+                  setPagination((p) => ({ ...p, page: p.page + 1 }))
                 }
-                className="px-4 py-2 text-gray-600 disabled:opacity-50 hover:bg-gray-100 rounded-lg flex items-center gap-1"
+                className="px-3 py-1.5 text-gray-600 disabled:opacity-50 hover:bg-gray-100 rounded-lg transition flex items-center gap-1"
               >
-                {t("historial.pagination.next")} <ChevronRight size={18} />
+                <ChevronRight size={16} />
               </button>
             </div>
           </div>
         )}
       </div>
-
-      {/* Modal de Devolución */}
       {refundModal && refundSale && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div
@@ -1388,101 +1433,138 @@ export default function Historial() {
           <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
             <div className="px-6 py-4 bg-gradient-to-r from-orange-500 to-orange-600 text-white flex justify-between items-center">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2">
-                  <ArrowDownRight size={24} /> Devolución de Venta
-                </h2>
+                <h2 className="text-lg font-bold">Devolución</h2>
                 <p className="text-orange-100 text-sm">
-                  Venta #{refundSale.id.slice(0, 8)} - Total original: $
+                  #{refundSale.id.slice(0, 8)} - $
                   {parseFloat(refundSale.total).toFixed(2)}
                 </p>
               </div>
               <button
                 onClick={() => !processingRefund && setRefundModal(false)}
-                className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                className="p-2 hover:bg-white/20 rounded-lg"
               >
-                <X size={24} />
+                <X size={20} />
               </button>
             </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-gray-50">
-              <div className="bg-white rounded-xl p-4 border">
-                <h3 className="font-semibold text-gray-800 mb-3">
-                  Productos a devolver
-                </h3>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+              <div className="bg-white rounded-xl p-3 border">
                 {saleDetails[refundSale.id]?.items?.map((item) => (
                   <div
                     key={item.productId}
-                    className="flex items-center justify-between py-3 border-b last:border-b-0"
+                    className="flex items-center justify-between py-2 border-b last:border-b-0"
                   >
-                    <div className="flex-1">
-                      <p className="font-medium text-gray-800">{item.name}</p>
-                      <p className="text-sm text-gray-500">
-                        Precio unitario: ${item.unitPrice.toFixed(2)} |
-                        Vendidos: {item.quantity}
+                    <div>
+                      <p className="font-medium text-sm">{item.name}</p>
+                      <p className="text-xs text-gray-500">
+                        ${item.unitPrice.toFixed(2)} x {item.quantity}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2 ml-4">
+                    <div className="flex items-center gap-2">
                       <input
                         type="number"
                         min="0"
                         max={item.quantity}
                         value={refundItems[item.productId] || 0}
                         onChange={(e) => {
-                          const val = Math.min(
+                          const v = Math.min(
                             Math.max(0, parseInt(e.target.value) || 0),
                             item.quantity,
                           );
-                          setRefundItems((prev) => ({
-                            ...prev,
-                            [item.productId]: val,
+                          setRefundItems((p) => ({
+                            ...p,
+                            [item.productId]: v,
                           }));
                         }}
-                        className="w-16 text-center border rounded-lg py-1.5 text-sm"
+                        className="w-14 text-center border rounded py-1 text-sm"
                         disabled={processingRefund}
                       />
-                      <span className="text-sm text-gray-500">
+                      <span className="text-xs text-gray-500">
                         / {item.quantity}
                       </span>
                     </div>
                   </div>
                 ))}
               </div>
-
+              <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={isCreditNote}
+                  onChange={(e) => setIsCreditNote(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 rounded"
+                  disabled={processingRefund}
+                />
+                <label className="text-sm font-medium">Nota de Crédito</label>
+              </div>
+              {isCreditNote && (
+                <div className="space-y-2 bg-white p-3 rounded-lg border border-blue-200">
+                  <div>
+                    <label className="text-xs text-gray-500">N° NC *</label>
+                    <input
+                      type="text"
+                      value={creditNoteNumber}
+                      onChange={(e) => setCreditNoteNumber(e.target.value)}
+                      className="w-full mt-1 px-2 py-1.5 border rounded text-sm"
+                      placeholder="NC-001"
+                      disabled={processingRefund}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500">Cliente *</label>
+                    <input
+                      type="text"
+                      value={creditCustomerName}
+                      onChange={(e) => setCreditCustomerName(e.target.value)}
+                      className="w-full mt-1 px-2 py-1.5 border rounded text-sm"
+                      placeholder="Nombre"
+                      disabled={processingRefund}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={creditCf}
+                      onChange={(e) => setCreditCf(e.target.checked)}
+                      className="rounded text-blue-600"
+                      disabled={processingRefund}
+                    />
+                    <label className="text-sm text-gray-600">C.F.</label>
+                  </div>
+                </div>
+              )}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Motivo de devolución
+                <label className="text-sm font-medium text-gray-700">
+                  Motivo
                 </label>
                 <textarea
                   value={refundReason}
                   onChange={(e) => setRefundReason(e.target.value)}
                   rows={2}
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
-                  placeholder="Ej: Producto dañado, error en el pedido..."
+                  className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                  placeholder="Motivo..."
                   disabled={processingRefund}
                 />
               </div>
             </div>
-
-            <div className="border-t border-gray-200 p-4 bg-white flex justify-between items-center">
-              <div className="text-sm text-gray-600">
-                Total a reembolsar:{" "}
+            <div className="border-t p-3 bg-white flex justify-between items-center">
+              <div className="text-sm">
+                Reembolso:{" "}
                 <strong className="text-lg text-green-600">
                   $
                   {Object.entries(refundItems)
-                    .reduce((total, [productId, qty]) => {
-                      const item = saleDetails[refundSale.id]?.items?.find(
-                        (i) => i.productId === productId,
+                    .reduce((t, [pid, q]) => {
+                      const i = saleDetails[refundSale.id]?.items?.find(
+                        (x) => x.productId === pid,
                       );
-                      return total + qty * (item?.unitPrice || 0);
+                      return t + q * (i?.unitPrice || 0);
                     }, 0)
                     .toFixed(2)}
                 </strong>
               </div>
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <button
                   onClick={() => setRefundModal(false)}
                   disabled={processingRefund}
-                  className="px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50"
+                  className="px-3 py-1.5 border rounded-lg text-gray-700 hover:bg-gray-50 transition"
                 >
                   Cancelar
                 </button>
@@ -1490,30 +1572,24 @@ export default function Historial() {
                   onClick={handleRefundSubmit}
                   disabled={
                     processingRefund ||
-                    Object.values(refundItems).every((qty) => qty === 0)
+                    Object.values(refundItems).every((q) => q === 0)
                   }
-                  className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 flex items-center gap-2"
+                  className="px-3 py-1.5 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 transition flex items-center gap-1"
                 >
-                  {processingRefund ? (
-                    <>Procesando...</>
-                  ) : (
-                    <>
-                      <ArrowDownRight size={18} /> Procesar Devolución
-                    </>
-                  )}
+                  <ArrowDownRight size={14} />
+                  Procesar
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
-
-      {/* Ticket oculto para impresión */}
       <div
         style={{
           display: showTicket && lastSale ? "block" : "none",
           position: "absolute",
           left: "-9999px",
+          top: 0,
         }}
       >
         {lastSale && (

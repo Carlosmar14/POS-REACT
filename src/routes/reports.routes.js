@@ -127,7 +127,56 @@ router.get(
         paymentMethod,
         cashierId,
       );
+      // GET /reports/top-products
+      router.get(
+        "/top-products",
+        verifyToken,
+        requireRole("admin"),
+        async (req, res) => {
+          try {
+            const { start, end } = req.query;
+            const conditions = ["s.status = 'completed'"];
+            const values = [];
 
+            if (start) {
+              conditions.push(`s.created_at >= $${values.length + 1}`);
+              values.push(new Date(start));
+            }
+            if (end) {
+              conditions.push(`s.created_at <= $${values.length + 1}`);
+              values.push(new Date(end + "T23:59:59"));
+            }
+
+            const whereClause = conditions.length
+              ? `WHERE ${conditions.join(" AND ")}`
+              : "";
+
+            const sql = `
+      SELECT 
+        p.id AS product_id,
+        p.name AS product_name,
+        p.image_url,
+        SUM(si.quantity) AS total_quantity,
+        SUM(si.subtotal) AS total_amount
+      FROM sale_items si
+      JOIN sales s ON si.sale_id = s.id
+      JOIN products p ON si.product_id = p.id
+      ${whereClause}
+      GROUP BY p.id, p.name, p.image_url
+      ORDER BY total_quantity DESC
+      LIMIT 10
+    `;
+
+            const result = await pool.query(sql, values);
+            res.json({ success: true, data: result.rows });
+          } catch (err) {
+            console.error("Error en top-products:", err);
+            res
+              .status(500)
+              .json({ success: false, message: "Error interno del servidor" });
+          }
+        },
+      );
       // 1. Totales globales
       const globalQuery = `
       SELECT 
@@ -186,13 +235,11 @@ router.get(
       });
     } catch (err) {
       if (err instanceof z.ZodError) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Parámetros inválidos",
-            errors: err.errors.map((e) => e.message),
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Parámetros inválidos",
+          errors: err.errors.map((e) => e.message),
+        });
       }
       console.error("❌ Error dashboard:", err);
       res

@@ -23,6 +23,7 @@ import Historial from "./pages/Historial";
 import HistorialStock from "./pages/HistorialStock";
 import Configuracion from "./pages/Configuracion";
 import CashManagement from "./pages/CashManagement";
+import Facturacion from "./pages/Facturacion"; // ← NUEVA IMPORTACIÓN
 
 const LicenseGuard = ({ children }) => {
   const [status, setStatus] = useState({ loading: true, valid: false });
@@ -195,6 +196,19 @@ function AppRoutes() {
             </LicenseGuard>
           }
         />
+
+        {/* ↓↓↓ NUEVA RUTA FACTURACIÓN ↓↓↓ */}
+        <Route
+          path="facturacion"
+          element={
+            <LicenseGuard>
+              <ProtectedRoute allowedRoles={["admin"]}>
+                <Facturacion />
+              </ProtectedRoute>
+            </LicenseGuard>
+          }
+        />
+
         <Route
           index
           element={
