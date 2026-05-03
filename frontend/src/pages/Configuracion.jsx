@@ -132,6 +132,13 @@ export default function Configuracion() {
   // Estado para backups
   const [backups, setBackups] = useState([]);
 
+  // Estados para gestión de dispositivos (máquinas)
+  const [machines, setMachines] = useState([]);
+  const [machinesLoading, setMachinesLoading] = useState(false);
+
+  // Disparador para refrescar licencia
+  const [licenseRefreshTrigger, setLicenseRefreshTrigger] = useState(0);
+
   useEffect(() => {
     if (user && user.role !== "admin") {
       navigate("/caja");
@@ -154,10 +161,11 @@ export default function Configuracion() {
     }
   }, [location, user]);
 
-  // Cargar lista de backups al entrar en la pestaña sistema
+  // Cargar lista de backups y máquinas al entrar en sistema
   useEffect(() => {
     if (activeTab === "system") {
       fetchBackups();
+      fetchMachines();
     }
   }, [activeTab]);
 
@@ -386,6 +394,48 @@ export default function Configuracion() {
     }
   };
 
+  // Funciones para gestión de dispositivos (máquinas)
+  const fetchMachines = async () => {
+    setMachinesLoading(true);
+    try {
+      const res = await api.get("/license/machines");
+      setMachines(res.data.data || []);
+    } catch (err) {
+      console.error("Error al cargar dispositivos:", err);
+    } finally {
+      setMachinesLoading(false);
+    }
+  };
+
+  const removeMachine = async (id) => {
+    const result = await Swal.fire({
+      title: "¿Eliminar dispositivo?",
+      text: "Al eliminarlo, se liberará un cupo de activación para otro equipo.",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#dc3545",
+      confirmButtonText: "Eliminar",
+      cancelButtonText: "Cancelar",
+    });
+    if (!result.isConfirmed) return;
+    try {
+      await api.delete(`/license/machines/${id}`);
+      Swal.fire(
+        "Dispositivo eliminado",
+        "El cambio surtirá efecto en la próxima verificación.",
+        "success",
+      );
+      fetchMachines();
+      setLicenseRefreshTrigger((prev) => prev + 1); // Forzar refresco de licencia
+    } catch (err) {
+      Swal.fire(
+        "Error",
+        err.response?.data?.message || "No se pudo eliminar el dispositivo",
+        "error",
+      );
+    }
+  };
+
   // Funciones de 2FA (sin cambios)
   const open2FAModal = () => {
     setTwoFAStep(1);
@@ -519,15 +569,17 @@ export default function Configuracion() {
     setVerificationCode(value);
   };
 
-  // LicenciaInfo (componente interno)
-  const LicenciaInfo = () => {
+  // LicenciaInfo (componente interno) – ahora recibe refresh
+  const LicenciaInfo = ({ refresh }) => {
     const [license, setLicense] = useState(null);
     const [loadingLicense, setLoadingLicense] = useState(true);
+
     useEffect(() => {
       loadLicenseInfo();
-    }, []);
+    }, [refresh]);
 
     const loadLicenseInfo = async () => {
+      setLoadingLicense(true);
       try {
         const res = await api.get("/license/status");
         if (res.data.success) setLicense(res.data.data);
@@ -1652,6 +1704,7 @@ export default function Configuracion() {
         {/* SISTEMA */}
         {activeTab === "system" && (
           <div className="p-6 space-y-4">
+            {/* Información de licencia */}
             <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
               <div className="flex items-center gap-2 mb-4">
                 <Shield
@@ -1662,8 +1715,81 @@ export default function Configuracion() {
                   {t("config.system.license_info")}
                 </h3>
               </div>
-              <LicenciaInfo />
+              <LicenciaInfo refresh={licenseRefreshTrigger} />
             </div>
+
+            {/* GESTIÓN DE DISPOSITIVOS (MÁQUINAS) EN TABLA */}
+            <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                  <Monitor
+                    className="text-blue-600 dark:text-blue-400"
+                    size={18}
+                  />
+                  Dispositivos registrados ({machines.length})
+                </h3>
+                <button
+                  onClick={fetchMachines}
+                  className="text-sm px-3 py-1.5 bg-white dark:bg-gray-800 border rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition flex items-center gap-1"
+                >
+                  <RefreshCw size={14} /> Actualizar
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                Administra los equipos donde se ha activado la licencia. Puedes
+                eliminar uno para liberar un cupo.
+              </p>
+
+              {machinesLoading ? (
+                <LoaderPOS message="Cargando..." />
+              ) : machines.length === 0 ? (
+                <p className="text-sm text-gray-500 py-4 text-center">
+                  No hay dispositivos registrados.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-100 dark:bg-gray-700">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Hash de máquina</th>
+                        <th className="px-3 py-2 text-left">ID de máquina</th>
+                        <th className="px-3 py-2 text-left">Último acceso</th>
+                        <th className="px-3 py-2 text-center">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {machines.map((m) => (
+                        <tr
+                          key={m.id}
+                          className="border-b border-gray-200 dark:border-gray-700"
+                        >
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {m.machine_hash}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-gray-500">
+                            {m.machine_id?.slice(0, 20)}...
+                          </td>
+                          <td className="px-3 py-2 text-xs text-gray-500">
+                            {new Date(m.last_seen).toLocaleString("es-ES")}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              onClick={() => removeMachine(m.id)}
+                              className="p-1.5 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition"
+                              title="Eliminar dispositivo"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Configuración del sistema */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
                 <p className="font-medium text-gray-900 dark:text-white mb-2">
@@ -1761,7 +1887,7 @@ export default function Configuracion() {
               </div>
             </div>
 
-            {/* === NUEVA SECCIÓN DE COPIAS DE SEGURIDAD === */}
+            {/* COPIAS DE SEGURIDAD */}
             <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
               <div className="flex items-center gap-2 mb-4">
                 <Database
@@ -1964,7 +2090,6 @@ export default function Configuracion() {
                 </div>
               </div>
             </div>
-            {/* FIN SECCIÓN BACKUPS */}
           </div>
         )}
 

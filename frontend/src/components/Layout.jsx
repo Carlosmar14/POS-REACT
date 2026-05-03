@@ -24,7 +24,8 @@ import {
   Settings,
   RefreshCw,
   CreditCard,
-  Receipt, // ← para Facturación
+  Receipt,
+  ClipboardList, // <-- AÑADIDO
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import LoaderPOS from "./LoaderPOS";
@@ -89,6 +90,16 @@ export default function Layout() {
           icon: History,
           translationKey: "layout.menu.stock_history",
         },
+        {
+          to: "/historial",
+          icon: History,
+          translationKey: "layout.menu.sales_history",
+        },
+        {
+          to: "/pedidos-pendientes",
+          icon: ClipboardList,
+          translationKey: "layout.menu.pending_orders", // Clave de traducción (defínela en tu json)
+        },
       ];
     }
     if (user?.role === "cashier") {
@@ -125,13 +136,18 @@ export default function Layout() {
         },
         {
           to: "/facturacion",
-          icon: Receipt, // ← icono distinto
+          icon: Receipt,
           translationKey: "layout.menu.invoices",
         },
         {
           to: "/caja-gestion",
           icon: CreditCard,
           translationKey: "layout.menu.cash_management",
+        },
+        {
+          to: "/pedidos-pendientes",
+          icon: ClipboardList,
+          translationKey: "layout.menu.pending_orders",
         },
 
         // ── INVENTARIO ──

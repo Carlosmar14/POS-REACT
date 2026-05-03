@@ -338,30 +338,43 @@ export default function Caja() {
       const res = await api.post("/sales", saleData);
       if (res.data?.success) {
         const backendData = res.data.data || {};
-        const sale = {
-          saleId: backendData.saleId || `VENTA-${Date.now()}`,
-          total: backendData.total || Number(total()) || 0,
-          createdAt: backendData.createdAt || new Date().toISOString(),
-          paymentMethod: payment,
-        };
-        const ticketItems = items.map((item) => ({
-          name: item.name,
-          quantity: parseInt(item.qty) || 1,
-          unit_price: parseFloat(item.price) || 0,
-        }));
-        setLastSale({ ...sale, items: ticketItems });
-        setShowTicket(true);
-        setTimeout(() => handlePrint(), 300);
-        clear();
+        if (backendData.status === "pending") {
+          // Venta pendiente de aprobación (cajero o almacenero sin permiso directo)
+          Swal.fire({
+            icon: "info",
+            title: "Pedido pendiente",
+            text: "La venta ha sido enviada para aprobación del almacenero.",
+            timer: 2000,
+            showConfirmButton: false,
+          });
+          clear();
+          await loadProducts(); // Refrescar para ver el stock real (aún no descontado)
+        } else {
+          // Venta completada directamente (admin)
+          const sale = {
+            saleId: backendData.saleId || `VENTA-${Date.now()}`,
+            total: backendData.total || Number(total()) || 0,
+            createdAt: backendData.createdAt || new Date().toISOString(),
+            paymentMethod: payment,
+          };
+          const ticketItems = items.map((item) => ({
+            name: item.name,
+            quantity: parseInt(item.qty) || 1,
+            unit_price: parseFloat(item.price) || 0,
+          }));
+          setLastSale({ ...sale, items: ticketItems });
+          setShowTicket(true);
+          setTimeout(() => handlePrint(), 300);
+          clear();
 
-        Swal.fire({
-          icon: "success",
-          title: invoiceData ? "Factura registrada" : "Venta exitosa",
-          timer: 1500,
-          showConfirmButton: false,
-        });
-
-        await loadProducts();
+          Swal.fire({
+            icon: "success",
+            title: invoiceData ? "Factura registrada" : "Venta exitosa",
+            timer: 1500,
+            showConfirmButton: false,
+          });
+          await loadProducts(); // Refrescar stock descontado
+        }
       }
     } catch (err) {
       console.error("❌ Error en venta:", err);

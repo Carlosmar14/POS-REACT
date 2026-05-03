@@ -1,3 +1,4 @@
+// frontend/src/pages/Historial.jsx
 import {
   useState,
   useEffect,
@@ -312,12 +313,7 @@ export default function Historial() {
             .reduce((s, v) => s + parseFloat(v.total || 0), 0),
         },
       });
-      const gp = new URLSearchParams();
-      if (advancedFilters.startDate)
-        gp.append("start", advancedFilters.startDate);
-      if (advancedFilters.endDate) gp.append("end", advancedFilters.endDate);
-      if (advancedFilters.paymentMethod)
-        gp.append("paymentMethod", advancedFilters.paymentMethod);
+      const gp = new URLSearchParams(bp);
       gp.append("limit", "9999");
       gp.append("status", "completed");
       const gr = await api.get(`/sales?${gp.toString()}`);
@@ -1195,7 +1191,10 @@ export default function Historial() {
                 <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <th className="w-10 px-6 py-3"></th>
                   <th className="px-6 py-3">ID</th>
-                  <th className="px-6 py-3">Cajero</th>
+                  {/* Columna Cajero visible para admin y warehouse */}
+                  {(user?.role === "admin" || user?.role === "warehouse") && (
+                    <th className="px-6 py-3">Cajero</th>
+                  )}
                   <th className="px-6 py-3">Total</th>
                   <th className="px-6 py-3">Método</th>
                   <th className="px-6 py-3">Estado</th>
@@ -1233,14 +1232,18 @@ export default function Historial() {
                         <td className="px-6 py-4 font-mono text-xs text-gray-500">
                           {s.id.slice(0, 8)}...
                         </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <User size={14} className="text-gray-400" />
-                            <span className="text-sm font-medium">
-                              {s.cashier_name || "Sistema"}
-                            </span>
-                          </div>
-                        </td>
+                        {/* Celda Cajero visible para admin y warehouse */}
+                        {(user?.role === "admin" ||
+                          user?.role === "warehouse") && (
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <User size={14} className="text-gray-400" />
+                              <span className="text-sm font-medium">
+                                {s.cashier_name || "Sistema"}
+                              </span>
+                            </div>
+                          </td>
+                        )}
                         <td className="px-6 py-4 text-sm font-bold text-green-700">
                           <MoneyDisplay amount={s.total} />
                         </td>
@@ -1279,15 +1282,17 @@ export default function Historial() {
                             >
                               <Printer size={14} />
                             </button>
-                            {s.status === "completed" && (
-                              <button
-                                onClick={() => openRefundModal(s)}
-                                className="bg-orange-600 text-white p-1.5 rounded-lg hover:bg-orange-700 transition"
-                                title="Devolver"
-                              >
-                                <ArrowDownRight size={14} />
-                              </button>
-                            )}
+                            {/* Botón de devolución solo para admin */}
+                            {s.status === "completed" &&
+                              user?.role === "admin" && (
+                                <button
+                                  onClick={() => openRefundModal(s)}
+                                  className="bg-orange-600 text-white p-1.5 rounded-lg hover:bg-orange-700 transition"
+                                  title="Devolver"
+                                >
+                                  <ArrowDownRight size={14} />
+                                </button>
+                              )}
                           </div>
                         </td>
                       </tr>

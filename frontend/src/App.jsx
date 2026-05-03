@@ -23,7 +23,8 @@ import Historial from "./pages/Historial";
 import HistorialStock from "./pages/HistorialStock";
 import Configuracion from "./pages/Configuracion";
 import CashManagement from "./pages/CashManagement";
-import Facturacion from "./pages/Facturacion"; // ← NUEVA IMPORTACIÓN
+import Facturacion from "./pages/Facturacion";
+import PedidosPendientes from "./pages/PedidosPendientes"; // <-- Importar
 
 const LicenseGuard = ({ children }) => {
   const [status, setStatus] = useState({ loading: true, valid: false });
@@ -110,7 +111,7 @@ function AppRoutes() {
           path="historial"
           element={
             <LicenseGuard>
-              <ProtectedRoute allowedRoles={["cashier", "admin"]}>
+              <ProtectedRoute allowedRoles={["cashier", "admin", "warehouse"]}>
                 <Historial />
               </ProtectedRoute>
             </LicenseGuard>
@@ -196,14 +197,23 @@ function AppRoutes() {
             </LicenseGuard>
           }
         />
-
-        {/* ↓↓↓ NUEVA RUTA FACTURACIÓN ↓↓↓ */}
         <Route
           path="facturacion"
           element={
             <LicenseGuard>
               <ProtectedRoute allowedRoles={["admin"]}>
                 <Facturacion />
+              </ProtectedRoute>
+            </LicenseGuard>
+          }
+        />
+        {/* NUEVA RUTA PARA PEDIDOS PENDIENTES */}
+        <Route
+          path="pedidos-pendientes"
+          element={
+            <LicenseGuard>
+              <ProtectedRoute allowedRoles={["warehouse", "admin"]}>
+                <PedidosPendientes />
               </ProtectedRoute>
             </LicenseGuard>
           }

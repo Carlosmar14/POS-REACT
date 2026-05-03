@@ -73,6 +73,23 @@ router.get("/cashiers", verifyToken, requireRole("admin"), async (req, res) => {
   }
 });
 
+// ✅ NUEVO ENDPOINT: Obtener aprobadores (usuarios con rol admin o warehouse activos)
+router.get("/approvers", verifyToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, role FROM users 
+       WHERE role IN ('admin', 'warehouse') AND is_active = true 
+       ORDER BY name ASC`,
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error("Error al cargar aprobadores:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
+  }
+});
+
 // Obtener un usuario por ID (admin)
 router.get("/:id", verifyToken, requireRole("admin"), async (req, res) => {
   try {
@@ -204,12 +221,10 @@ router.put("/:id", verifyToken, requireRole("admin"), async (req, res) => {
       });
     }
     if (err.code === "23505") {
-      return res
-        .status(409)
-        .json({
-          success: false,
-          message: "El email ya está en uso por otro usuario",
-        });
+      return res.status(409).json({
+        success: false,
+        message: "El email ya está en uso por otro usuario",
+      });
     }
     console.error("Error al actualizar usuario:", err);
     res

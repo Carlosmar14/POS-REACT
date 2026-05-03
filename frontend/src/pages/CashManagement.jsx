@@ -34,6 +34,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 
+// ──── helpers de estilos y subcomponentes (sin cambios) ────
 const getBillColor = (value) => {
   if (value >= 1000) return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (value >= 100) return "bg-green-50 text-green-700 border-green-200";
@@ -358,6 +359,9 @@ const PaymentBadge = ({ method }) => {
   );
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Componente principal
+// ──────────────────────────────────────────────────────────────────────────────
 export default function CashManagement() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
@@ -401,6 +405,9 @@ export default function CashManagement() {
   const [salesTotal, setSalesTotal] = useState(0);
   const itemsPerPageSales = config?.appearance?.itemsPerPage || 20;
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Efectos iniciales
+  // ──────────────────────────────────────────────────────────────────────
   useEffect(() => {
     loadDenominations();
     if (isAdmin) {
@@ -412,12 +419,24 @@ export default function CashManagement() {
     }
   }, [isAdmin]);
 
+  // Cargar totales y lista cuando la sesión activa cambie
+  useEffect(() => {
+    if (!isAdmin && activeSessionDetail?.id) {
+      loadSessionTotals(activeSessionDetail.id);
+      loadSessionSales(activeSessionDetail.id);
+    }
+  }, [activeSessionDetail, isAdmin]);
+
+  // Recargar la lista paginada cuando cambie la página
   useEffect(() => {
     if (!isAdmin && activeSessionDetail?.id) {
       loadSessionSales(activeSessionDetail.id);
     }
-  }, [activeSessionDetail, isAdmin, salesPage]);
+  }, [salesPage]);
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Funciones de carga de datos
+  // ──────────────────────────────────────────────────────────────────────
   const loadDenominations = async () => {
     try {
       const res = await api.get("/cash/denominations");
@@ -434,6 +453,7 @@ export default function CashManagement() {
       console.error(err);
     }
   };
+
   const loadActiveSessions = async () => {
     try {
       const sessions =
@@ -443,16 +463,11 @@ export default function CashManagement() {
       await Promise.all(
         sessions.map(async (s) => {
           try {
-            // ✅ SOLO VENTAS COMPLETADAS para los totales de sesión
-            const sales =
-              (
-                await api.get(
-                  `/sales?cash_session_id=${s.id}&limit=1000&status=completed`,
-                )
-              ).data.data || [];
-            let e = 0,
-              t = 0,
-              tr = 0;
+            const salesRes = await api.get(
+              `/sales?cash_session_id=${s.id}&limit=1000&status=completed`
+            );
+            const sales = salesRes.data.data || [];
+            let e = 0, t = 0, tr = 0;
             sales.forEach((sl) => {
               const tot = parseFloat(sl.total) || 0;
               if (sl.payment_method === "cash") e += tot;
@@ -468,7 +483,7 @@ export default function CashManagement() {
           } catch {
             map[s.id] = { efectivo: 0, tarjeta: 0, transferencia: 0, total: 0 };
           }
-        }),
+        })
       );
       setActiveSessionTotals(map);
     } catch (err) {
@@ -517,23 +532,14 @@ export default function CashManagement() {
     }
   };
 
-  const loadSessionSales = async (sid) => {
+  // ✅ NUEVA: carga los totales globales de la sesión (todas las ventas completadas)
+  const loadSessionTotals = async (sid) => {
     try {
-      const params = new URLSearchParams();
-      params.append("page", salesPage);
-      params.append("limit", itemsPerPageSales);
-      // ✅ SOLO VENTAS COMPLETADAS en la lista y totales del cajero
-      params.append("status", "completed");
       const res = await api.get(
-        `/sales?cash_session_id=${sid}&${params.toString()}`,
+        `/sales?cash_session_id=${sid}&limit=1000&status=completed`
       );
       const sales = res.data.data || [];
-      setSessionSales(sales);
-      setSalesTotalPages(res.data.pagination?.totalPages || 1);
-      setSalesTotal(res.data.pagination?.total || 0);
-      let e = 0,
-        t = 0,
-        tr = 0;
+      let e = 0, t = 0, tr = 0;
       sales.forEach((sl) => {
         const tot = parseFloat(sl.total) || 0;
         if (sl.payment_method === "cash") e += tot;
@@ -546,6 +552,25 @@ export default function CashManagement() {
         transferencia: tr,
         total: e + t + tr,
       });
+    } catch (err) {
+      console.error("Error cargando totales de sesión:", err);
+    }
+  };
+
+  // ✅ MODIFICADA: solo carga la lista paginada (no afecta los totales globales)
+  const loadSessionSales = async (sid) => {
+    try {
+      const params = new URLSearchParams();
+      params.append("page", salesPage);
+      params.append("limit", itemsPerPageSales);
+      params.append("status", "completed");
+      const salesRes = await api.get(
+        `/sales?cash_session_id=${sid}&${params.toString()}`
+      );
+      const sales = salesRes.data.data || [];
+      setSessionSales(sales);
+      setSalesTotalPages(salesRes.data.pagination?.totalPages || 1);
+      setSalesTotal(salesRes.data.pagination?.total || 0);
     } catch (err) {
       console.error(err);
     }
@@ -657,7 +682,7 @@ export default function CashManagement() {
     return `${currencySymbol} ${parts.join(".")}`.trim();
   };
 
-  // VISTA ADMINISTRADOR
+  // ───── VISTA ADMINISTRADOR ─────
   if (isAdmin) {
     return (
       <div className="min-h-screen bg-gray-50 p-6 space-y-6">
@@ -864,7 +889,7 @@ export default function CashManagement() {
           </div>
         </div>
 
-        {/* Historial de Cierres con paginación y filtros */}
+        {/* Historial de Cierres */}
         <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
           <div
             className="px-6 py-4 bg-gradient-to-r from-gray-50 to-slate-50 border-b flex items-center justify-between cursor-pointer"
@@ -889,7 +914,6 @@ export default function CashManagement() {
           </div>
           {showHistory && (
             <>
-              {/* Filtros del historial */}
               <div className="px-6 py-3 bg-gray-50 border-b flex flex-wrap gap-3">
                 <div className="flex items-center gap-2">
                   <Calendar size={14} className="text-gray-400" />
@@ -1085,7 +1109,7 @@ export default function CashManagement() {
     );
   }
 
-  // VISTA CAJERO CON SESIÓN
+  // ───── VISTA CAJERO CON SESIÓN ─────
   if (activeSessionDetail) {
     return (
       <div className="min-h-screen bg-gray-50 p-6 space-y-6">
@@ -1147,7 +1171,7 @@ export default function CashManagement() {
                 {t("cashmanagement.sales_count")}
               </p>
               <p className="text-xl font-bold mt-1 flex items-center justify-center gap-1">
-                <ArrowUpRight size={16} /> {sessionSales.length}
+                <ArrowUpRight size={16} /> {salesTotal}
               </p>
             </div>
           </div>
@@ -1325,7 +1349,7 @@ export default function CashManagement() {
     );
   }
 
-  // CAJERO SIN SESIÓN
+  // ───── CAJERO SIN SESIÓN ─────
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 text-center">
       <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full border">

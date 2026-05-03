@@ -31,6 +31,22 @@ const invoiceUpdateSchema = z.object({
   fe: z.string().max(50).optional().nullable(),
 });
 
+const approveSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: z.string().uuid(),
+        quantity: z.coerce.number().int().positive(),
+      }),
+    )
+    .optional(),
+  reason: z.string().optional(),
+});
+
+const rejectSchema = z.object({
+  reason: z.string().optional(),
+});
+
 // Helper
 const getAuthUser = (req) => ({
   id: req.user?.id || req.user?.sub || req.user?.userId,
@@ -46,7 +62,7 @@ router.get("/stats", verifyToken, async (req, res) => {
     const { start, end, status, paymentMethod } = req.query;
     const conditions = [],
       values = [];
-    if (user.role !== "admin") {
+    if (user.role !== "admin" && user.role !== "warehouse") {
       conditions.push(`s.user_id = $${values.length + 1}::uuid`);
       values.push(user.id);
     }
@@ -112,7 +128,7 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
     const offset = (parseInt(page) - 1) * Math.max(parseInt(limit), 1);
     const conditions = [],
       values = [];
-    if (user.role !== "admin") {
+    if (user.role !== "admin" && user.role !== "warehouse") {
       conditions.push(`sm.created_by = $${values.length + 1}::uuid`);
       values.push(user.id);
     }
@@ -183,7 +199,7 @@ router.get("/stock-movements", verifyToken, async (req, res) => {
 });
 
 // ============================================================
-// POST / - Procesar venta (MODIFICADO para aceptar factura)
+// POST / - Crear venta (PENDIENTE para cajero/warehouse, COMPLETADA solo admin)
 // ============================================================
 router.post("/", verifyToken, async (req, res) => {
   const client = await pool.connect();
@@ -197,9 +213,12 @@ router.post("/", verifyToken, async (req, res) => {
         .status(401)
         .json({ success: false, message: "Usuario no autenticado" });
 
+    // Solo el admin puede completar la venta directamente; los demás generan pendiente
+    const status = user.role === "admin" ? "completed" : "pending";
+
     await client.query("BEGIN");
 
-    // sesión de caja
+    // sesión de caja (solo si no es admin)
     let cash_session_id = null;
     if (user.role !== "admin") {
       const cashSessionRes = await client.query(
@@ -218,37 +237,64 @@ router.post("/", verifyToken, async (req, res) => {
 
     let total = 0;
     const saleItemsData = [];
-    for (const item of items) {
-      const productRes = await client.query(
-        "SELECT id, sale_price, stock, name FROM products WHERE id = $1::uuid AND is_active = true FOR UPDATE",
-        [item.productId],
-      );
-      if (productRes.rows.length === 0) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({
-          success: false,
-          message: `Producto no encontrado: ${item.productId}`,
+
+    // Solo descontar stock si se completa directamente (admin)
+    if (status === "completed") {
+      for (const item of items) {
+        const productRes = await client.query(
+          "SELECT id, sale_price, stock, name FROM products WHERE id = $1::uuid AND is_active = true FOR UPDATE",
+          [item.productId],
+        );
+        if (productRes.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            success: false,
+            message: `Producto no encontrado: ${item.productId}`,
+          });
+        }
+        const product = productRes.rows[0];
+        if (parseInt(product.stock) < item.quantity) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            success: false,
+            message: `Stock insuficiente para "${product.name}"`,
+          });
+        }
+        await client.query(
+          "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2::uuid",
+          [item.quantity, item.productId],
+        );
+        saleItemsData.push({
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: parseFloat(product.sale_price),
+          subtotal: item.quantity * parseFloat(product.sale_price),
         });
+        total += item.quantity * parseFloat(product.sale_price);
       }
-      const product = productRes.rows[0];
-      if (parseInt(product.stock) < item.quantity) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          success: false,
-          message: `Stock insuficiente para "${product.name}"`,
+    } else {
+      // Solo calcular total sin tocar stock (pendiente)
+      for (const item of items) {
+        const productRes = await client.query(
+          "SELECT sale_price FROM products WHERE id = $1::uuid AND is_active = true",
+          [item.productId],
+        );
+        if (productRes.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            success: false,
+            message: `Producto no encontrado: ${item.productId}`,
+          });
+        }
+        const unitPrice = parseFloat(productRes.rows[0].sale_price);
+        saleItemsData.push({
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice,
+          subtotal: item.quantity * unitPrice,
         });
+        total += item.quantity * unitPrice;
       }
-      await client.query(
-        "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2::uuid",
-        [item.quantity, item.productId],
-      );
-      saleItemsData.push({
-        productId: item.productId,
-        quantity: item.quantity,
-        unitPrice: parseFloat(product.sale_price),
-        subtotal: item.quantity * parseFloat(product.sale_price),
-      });
-      total += item.quantity * parseFloat(product.sale_price);
     }
 
     const colRes = await client.query(
@@ -257,12 +303,13 @@ router.post("/", verifyToken, async (req, res) => {
     const totalColumn = colRes.rows[0]?.column_name || "total_amount";
     const saleRes = await client.query(
       `INSERT INTO sales (user_id, payment_method, ${totalColumn}, status, created_at, cash_session_id, invoice_number, customer_name, cf, fe)
-       VALUES ($1::uuid, $2, $3, 'completed', NOW(), $4, $5, $6, $7, $8)
+       VALUES ($1::uuid, $2, $3, $4, NOW(), $5, $6, $7, $8, $9)
        RETURNING id, created_at`,
       [
         user.id,
         paymentMethod,
         total,
+        status,
         cash_session_id,
         invoice_number || null,
         customer_name || null,
@@ -277,24 +324,19 @@ router.post("/", verifyToken, async (req, res) => {
         "INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES ($1, $2::uuid, $3, $4, $5)",
         [saleId, d.productId, d.quantity, d.unitPrice, d.subtotal],
       );
-    }
-    for (const item of items) {
-      await client.query(
-        "INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id) VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)",
-        [
-          item.productId,
-          -item.quantity,
-          "sale",
-          "Venta en POS",
-          user.id,
-          saleId,
-        ],
-      );
+      // Si la venta es completada, registrar movimiento de stock
+      if (status === "completed") {
+        await client.query(
+          "INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id) VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)",
+          [d.productId, -d.quantity, "sale", "Venta en POS", user.id, saleId],
+        );
+      }
     }
 
     await client.query("COMMIT");
 
-    await logAction("SALE_COMPLETED", user.id, req, {
+    const action = status === "completed" ? "SALE_COMPLETED" : "SALE_PENDING";
+    await logAction(action, user.id, req, {
       saleId,
       total,
       paymentMethod,
@@ -302,9 +344,14 @@ router.post("/", verifyToken, async (req, res) => {
       invoice: invoice_number || null,
     });
 
+    const message =
+      status === "completed"
+        ? "Venta procesada exitosamente"
+        : "Venta creada como pendiente de aprobación";
+
     res.status(201).json({
       success: true,
-      message: "Venta procesada exitosamente",
+      message,
       data: {
         saleId,
         total,
@@ -312,6 +359,7 @@ router.post("/", verifyToken, async (req, res) => {
         paymentMethod,
         itemsCount: items.length,
         invoice_number: invoice_number || null,
+        status,
       },
     });
   } catch (err) {
@@ -331,7 +379,7 @@ router.post("/", verifyToken, async (req, res) => {
 });
 
 // ============================================================
-// GET / - Listar ventas (historial)
+// GET / - Listar ventas (con soporte para filtro approvedBy)
 // ============================================================
 router.get("/", verifyToken, async (req, res) => {
   try {
@@ -344,11 +392,13 @@ router.get("/", verifyToken, async (req, res) => {
       status,
       paymentMethod,
       cash_session_id,
+      approvedBy, // nuevo
     } = req.query;
     const offset = (parseInt(page) - 1) * Math.max(parseInt(limit), 1);
     const conditions = [],
       values = [];
-    if (user.role !== "admin") {
+    // Filtro de usuario solo para cajero
+    if (user.role !== "admin" && user.role !== "warehouse") {
       conditions.push(`s.user_id = $${values.length + 1}::uuid`);
       values.push(user.id);
     }
@@ -372,12 +422,16 @@ router.get("/", verifyToken, async (req, res) => {
       conditions.push(`s.cash_session_id = $${values.length + 1}`);
       values.push(cash_session_id);
     }
+    if (approvedBy) {
+      conditions.push(`s.approved_by = $${values.length + 1}::uuid`);
+      values.push(approvedBy);
+    }
 
     const colRes = await pool.query(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'sales' AND column_name IN ('total_amount', 'total')`,
     );
     const totalColumn = colRes.rows[0]?.column_name || "total_amount";
-    let sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, COUNT(si.id) as items_count, s.invoice_number, s.customer_name, s.cf, s.fe
+    let sql = `SELECT s.id, s.${totalColumn} as total, s.payment_method, s.status, s.created_at, s.user_id, COALESCE(u.name, 'Cajera') AS cashier_name, COUNT(si.id) as items_count, s.invoice_number, s.customer_name, s.cf, s.fe, s.approved_by, s.modified_at
                FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN sale_items si ON s.id = si.sale_id`;
     if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
     sql += ` GROUP BY s.id, s.${totalColumn}, s.payment_method, s.status, s.created_at, s.user_id, u.name ORDER BY s.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
@@ -407,6 +461,34 @@ router.get("/", verifyToken, async (req, res) => {
 });
 
 // ============================================================
+// GET /sales/pending - Listar ventas pendientes (solo warehouse/admin)
+// ============================================================
+router.get("/pending", verifyToken, async (req, res) => {
+  try {
+    const user = getAuthUser(req);
+    if (user.role !== "admin" && user.role !== "warehouse") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+    const result = await pool.query(
+      `SELECT s.id, s.total, s.payment_method, s.status, s.created_at, u.name as cashier_name,
+              s.invoice_number, s.customer_name
+       FROM sales s
+       JOIN users u ON s.user_id = u.id
+       WHERE s.status = 'pending'
+       ORDER BY s.created_at ASC`,
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error("Error GET /sales/pending:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error al cargar pedidos pendientes" });
+  }
+});
+
+// ============================================================
 // GET /:id - Detalle de una venta
 // ============================================================
 router.get("/:id", verifyToken, async (req, res) => {
@@ -416,7 +498,8 @@ router.get("/:id", verifyToken, async (req, res) => {
     if (!uuidRegex.test(req.params.id))
       return res.status(400).json({ success: false, message: "ID no válido" });
     const user = getAuthUser(req);
-    if (user.role !== "admin") {
+    // warehouse puede ver cualquier venta; solo se restringe para cashier
+    if (user.role !== "admin" && user.role !== "warehouse") {
       const saleCheck = await pool.query(
         "SELECT user_id FROM sales WHERE id = $1::uuid",
         [req.params.id],
@@ -479,8 +562,220 @@ router.get("/:id", verifyToken, async (req, res) => {
 });
 
 // ============================================================
-// NUEVO ENDPOINT: PUT /:id/assign-invoice
-// Asigna datos de factura a una venta existente
+// PUT /:id/approve - Aprobar venta pendiente (reemplaza ítems si se envían, actualiza total)
+// ============================================================
+router.put("/:id/approve", verifyToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const user = getAuthUser(req);
+    if (user.role !== "admin" && user.role !== "warehouse") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+
+    const { id } = req.params;
+    const body = approveSchema.parse(req.body);
+    const { items: newItems, reason } = body;
+
+    const saleRes = await client.query(
+      "SELECT id, status, user_id, total FROM sales WHERE id = $1::uuid FOR UPDATE",
+      [id],
+    );
+    if (saleRes.rows.length === 0 || saleRes.rows[0].status !== "pending") {
+      await client.query("ROLLBACK");
+      return res
+        .status(404)
+        .json({ success: false, message: "Venta pendiente no encontrada" });
+    }
+
+    let finalItems;
+    let newTotal = 0;
+
+    if (newItems && newItems.length > 0) {
+      // Validar productos y stock
+      finalItems = [];
+      for (const item of newItems) {
+        const productRes = await client.query(
+          "SELECT id, name, sale_price, stock FROM products WHERE id = $1::uuid AND is_active = true FOR UPDATE",
+          [item.productId],
+        );
+        if (productRes.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res
+            .status(400)
+            .json({
+              success: false,
+              message: `Producto no encontrado: ${item.productId}`,
+            });
+        }
+        const product = productRes.rows[0];
+        if (product.stock < item.quantity) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            success: false,
+            message: `Stock insuficiente para "${product.name}" (${product.stock} disponibles)`,
+          });
+        }
+        const unitPrice = parseFloat(product.sale_price);
+        const subtotal = item.quantity * unitPrice;
+        finalItems.push({
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice,
+          subtotal,
+        });
+        newTotal += subtotal;
+      }
+
+      // Eliminar items originales y reinsertar
+      await client.query("DELETE FROM sale_items WHERE sale_id = $1::uuid", [
+        id,
+      ]);
+      for (const fi of finalItems) {
+        await client.query(
+          "INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES ($1::uuid, $2::uuid, $3, $4, $5)",
+          [id, fi.productId, fi.quantity, fi.unitPrice, fi.subtotal],
+        );
+      }
+
+      // Actualizar total de la venta
+      await client.query("UPDATE sales SET total = $1 WHERE id = $2::uuid", [
+        newTotal,
+        id,
+      ]);
+    } else {
+      // Usar items originales
+      const originalItems = await client.query(
+        "SELECT product_id, quantity, unit_price, subtotal FROM sale_items WHERE sale_id = $1::uuid",
+        [id],
+      );
+      if (originalItems.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ success: false, message: "No hay items en la venta" });
+      }
+      finalItems = originalItems.rows.map((r) => ({
+        productId: r.product_id,
+        quantity: r.quantity,
+        unitPrice: parseFloat(r.unit_price),
+        subtotal: parseFloat(r.subtotal),
+      }));
+      newTotal = parseFloat(saleRes.rows[0].total); // mantiene el total original
+    }
+
+    // Validar stock y descontar
+    for (const item of finalItems) {
+      const productRes = await client.query(
+        "SELECT id, name, stock FROM products WHERE id = $1::uuid AND is_active = true FOR UPDATE",
+        [item.productId],
+      );
+      if (productRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: `Producto no encontrado: ${item.productId}`,
+        });
+      }
+      if (productRes.rows[0].stock < item.quantity) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: `Stock insuficiente para "${productRes.rows[0].name}" (${productRes.rows[0].stock} disponibles)`,
+        });
+      }
+      await client.query(
+        "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2::uuid",
+        [item.quantity, item.productId],
+      );
+      await client.query(
+        `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by, sale_id)
+         VALUES ($1::uuid, $2, 'sale', $3, $4::uuid, $5)`,
+        [
+          item.productId,
+          -item.quantity,
+          reason || "Venta aprobada",
+          user.id,
+          id,
+        ],
+      );
+    }
+
+    // Marcar la venta como completada y registrar quién aprobó
+    await client.query(
+      "UPDATE sales SET status = 'completed', approved_by = $1, modified_at = NOW() WHERE id = $2::uuid",
+      [user.id, id],
+    );
+
+    await client.query("COMMIT");
+
+    await logAction("SALE_APPROVED", user.id, req, {
+      saleId: id,
+      items: finalItems,
+      total: newTotal,
+    });
+
+    res.json({ success: true, message: "Venta aprobada y stock descontado" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err instanceof z.ZodError) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Datos inválidos",
+          errors: err.errors,
+        });
+    }
+    console.error("Error al aprobar venta:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================================================
+// PUT /:id/reject - Rechazar venta pendiente
+// ============================================================
+router.put("/:id/reject", verifyToken, async (req, res) => {
+  try {
+    const user = getAuthUser(req);
+    if (user.role !== "admin" && user.role !== "warehouse") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+
+    const { id } = req.params;
+    const { reason } = rejectSchema.parse(req.body);
+
+    const result = await pool.query(
+      "UPDATE sales SET status = 'rejected', approved_by = $1, modified_at = NOW() WHERE id = $2::uuid AND status = 'pending' RETURNING id",
+      [user.id, id],
+    );
+
+    if (result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Venta pendiente no encontrada" });
+    }
+
+    await logAction("SALE_REJECTED", user.id, req, { saleId: id, reason });
+
+    res.json({ success: true, message: "Venta rechazada" });
+  } catch (err) {
+    console.error("Error al rechazar venta:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
+  }
+});
+
+// ============================================================
+// PUT /:id/assign-invoice (sin cambios)
 // ============================================================
 router.put("/:id/assign-invoice", verifyToken, async (req, res) => {
   try {
@@ -491,7 +786,6 @@ router.put("/:id/assign-invoice", verifyToken, async (req, res) => {
         .status(400)
         .json({ success: false, message: "ID de venta inválido" });
 
-    // Solo admin puede asignar facturas
     const user = getAuthUser(req);
     if (user.role !== "admin") {
       return res.status(403).json({
@@ -503,7 +797,6 @@ router.put("/:id/assign-invoice", verifyToken, async (req, res) => {
     const parsed = invoiceUpdateSchema.parse(req.body);
     const { invoice_number, customer_name, cf, fe } = parsed;
 
-    // Verificar que la venta existe y no tiene ya factura (opcional, puede sobrescribirse)
     const saleRes = await pool.query(
       "SELECT id, invoice_number FROM sales WHERE id = $1::uuid AND status = 'completed'",
       [req.params.id],
@@ -515,7 +808,6 @@ router.put("/:id/assign-invoice", verifyToken, async (req, res) => {
       });
     }
 
-    // Actualizar
     const result = await pool.query(
       `UPDATE sales SET invoice_number = $1, customer_name = $2, cf = $3, fe = $4
        WHERE id = $5::uuid

@@ -7,11 +7,6 @@ import { logAction } from "../services/auditService.js";
 
 const router = express.Router();
 
-// ============================================================================
-// ESQUEMAS DE VALIDACIÓN ZOD
-// ============================================================================
-
-// Para apertura de sesión (admin)
 const openSessionSchema = z.object({
   user_id: z.string().uuid("ID de usuario inválido"),
   initial_amount: z
@@ -20,7 +15,6 @@ const openSessionSchema = z.object({
     .min(0.01, "Monto mínimo 0.01"),
 });
 
-// Para cierre de sesión (admin o cajero)
 const closeSessionSchema = z.object({
   counts: z
     .array(
@@ -33,10 +27,6 @@ const closeSessionSchema = z.object({
   card_amount: z.number().min(0).default(0),
   transfer_amount: z.number().min(0).default(0),
 });
-
-// ============================================================================
-// RUTAS
-// ============================================================================
 
 // Obtener todas las cajas registradoras activas
 router.get("/registers", verifyToken, async (req, res) => {
@@ -51,7 +41,7 @@ router.get("/registers", verifyToken, async (req, res) => {
   }
 });
 
-// Obtener denominaciones activas (billetes/monedas)
+// Obtener denominaciones activas
 router.get("/denominations", verifyToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -124,15 +114,17 @@ router.get("/sessions/closed", verifyToken, async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (err) {
     console.error("Error cargando historial de cierres:", err);
-    res.status(500).json({
-      success: false,
-      message: "Error al cargar historial de cierres",
-    });
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Error al cargar historial de cierres",
+      });
   }
 });
 
 // ============================================================================
-// ADMIN: ABRIR SESIÓN (con validación Zod)
+// ADMIN: ABRIR SESIÓN
 // ============================================================================
 router.post("/sessions/admin/open", verifyToken, async (req, res) => {
   const userId = req.user?.userId || req.user?.id;
@@ -215,7 +207,7 @@ router.post("/sessions/admin/open", verifyToken, async (req, res) => {
 });
 
 // ============================================================================
-// ADMIN: CERRAR SESIÓN DE CUALQUIER CAJERO (con validación Zod)
+// ADMIN: CERRAR SESIÓN DE CUALQUIER CAJERO
 // ============================================================================
 router.post("/sessions/:id/admin-close", verifyToken, async (req, res) => {
   const { id } = req.params;
@@ -258,7 +250,7 @@ router.post("/sessions/:id/admin-close", verifyToken, async (req, res) => {
     const closing_amount =
       cashTotal + parseFloat(card_amount) + parseFloat(transfer_amount);
 
-    // ✅ Ventas reales de la sesión SOLO COMPLETADAS
+    // Solo ventas completadas (las devueltas ya están como 'refunded')
     const salesResult = await pool.query(
       "SELECT payment_method, COALESCE(SUM(total), 0) as total FROM sales WHERE cash_session_id = $1 AND status = 'completed' GROUP BY payment_method",
       [id],
@@ -317,7 +309,7 @@ router.post("/sessions/:id/admin-close", verifyToken, async (req, res) => {
 });
 
 // ============================================================================
-// CAJERO: CERRAR SU PROPIA SESIÓN (con validación Zod)
+// CAJERO: CERRAR SU PROPIA SESIÓN
 // ============================================================================
 router.post("/sessions/:id/close", verifyToken, async (req, res) => {
   const { id } = req.params;
@@ -359,7 +351,7 @@ router.post("/sessions/:id/close", verifyToken, async (req, res) => {
     const closing_amount =
       cashTotal + parseFloat(card_amount) + parseFloat(transfer_amount);
 
-    // ✅ Ventas reales de la sesión SOLO COMPLETADAS
+    // Solo ventas completadas (las devueltas ya están como 'refunded')
     const salesResult = await pool.query(
       "SELECT payment_method, COALESCE(SUM(total), 0) as total FROM sales WHERE cash_session_id = $1 AND status = 'completed' GROUP BY payment_method",
       [id],

@@ -1,23 +1,8 @@
-// src/utils/hardwareId.js
+// backend/src/utils/hardwareId.js
 import os from "os";
 import crypto from "crypto";
 import { execSync } from "child_process";
-
-const getDiskSerial = () => {
-  try {
-    if (process.platform === "win32") {
-      const output = execSync(
-        'wmic diskdrive where "Index=0" get serialnumber',
-        { encoding: "utf8", windowsHide: true },
-      );
-      const lines = output.split("\n").filter((l) => l.trim());
-      return lines[1]?.trim() || "UNKNOWN_DISK";
-    }
-    return "UNKNOWN_DISK";
-  } catch {
-    return "UNKNOWN_DISK";
-  }
-};
+import fs from "fs";
 
 const getMotherboardUUID = () => {
   try {
@@ -28,8 +13,14 @@ const getMotherboardUUID = () => {
       });
       const lines = output.split("\n").filter((l) => l.trim());
       return lines[1]?.trim() || "UNKNOWN_MB";
+    } else {
+      // Linux: leer /sys/class/dmi/id/product_uuid
+      const uuid = fs
+        .readFileSync("/sys/class/dmi/id/product_uuid", "utf8")
+        .trim();
+      if (uuid && uuid.length > 10) return uuid;
+      return "UNKNOWN_MB";
     }
-    return "UNKNOWN_MB";
   } catch {
     return "UNKNOWN_MB";
   }
@@ -53,14 +44,7 @@ const getMacAddress = () => {
 };
 
 export const getMachineId = () => {
-  const factors = [
-    getMacAddress(),
-    getDiskSerial(),
-    getMotherboardUUID(),
-    os.hostname(),
-    os.cpus()[0]?.model.replace(/\s+/g, "") || "UNKNOWN_CPU",
-    os.totalmem().toString(),
-  ];
+  const factors = [getMotherboardUUID(), getMacAddress()];
   const combined = factors.join("|");
   return crypto
     .createHash("sha512")

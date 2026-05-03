@@ -8,7 +8,7 @@ import { logAction } from "../services/auditService.js";
 
 const router = express.Router();
 
-// ✅ Esquemas de validación Zod
+// ✅ Esquemas de validación Zod (ampliados)
 const createProductSchema = z.object({
   sku: z.string().min(1, "SKU requerido").max(50, "SKU muy largo").trim(),
   name: z
@@ -20,13 +20,18 @@ const createProductSchema = z.object({
   sale_price: z.coerce.number().min(0, "Precio de venta inválido"),
   stock: z.coerce.number().int().min(0, "Stock inválido"),
   category_id: z.string().uuid().optional().nullable(),
+  // NUEVOS CAMPOS
+  min_stock: z.coerce.number().int().min(0).default(0),
+  expiry_date: z.string().optional().nullable(), // formato YYYY-MM-DD
+  wholesale_price: z.coerce.number().min(0).default(0),
+  special_price: z.coerce.number().min(0).default(0),
 });
 
 const updateProductSchema = createProductSchema.partial().extend({
   category_id: z.string().uuid().optional().nullable().or(z.literal("")),
 });
 
-// ✅ GET: Listar productos (sin cambios relevantes)
+// ✅ GET: Listar productos (ahora incluye los nuevos campos)
 router.get("/", verifyToken, async (req, res) => {
   try {
     const tableExists = await pool.query(
@@ -35,8 +40,15 @@ router.get("/", verifyToken, async (req, res) => {
     const hasCategories = tableExists.rows[0].exists;
 
     const sql = hasCategories
-      ? `SELECT p.id, p.sku, p.name, p.cost_price, p.sale_price, p.stock, p.category_id, p.image_url, p.is_active, p.created_at, COALESCE(c.name, 'Sin categoría') AS category_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.is_active = true ORDER BY p.name ASC`
-      : `SELECT p.id, p.sku, p.name, p.cost_price, p.sale_price, p.stock, p.category_id, p.image_url, p.is_active, p.created_at, 'Sin categoría' AS category_name FROM products p WHERE p.is_active = true ORDER BY p.name ASC`;
+      ? `SELECT p.id, p.sku, p.name, p.cost_price, p.sale_price, p.stock, p.category_id, p.image_url, p.is_active, p.created_at, 
+                COALESCE(c.name, 'Sin categoría') AS category_name,
+                p.min_stock, p.expiry_date, p.wholesale_price, p.special_price
+         FROM products p LEFT JOIN categories c ON p.category_id = c.id 
+         WHERE p.is_active = true ORDER BY p.name ASC`
+      : `SELECT p.id, p.sku, p.name, p.cost_price, p.sale_price, p.stock, p.category_id, p.image_url, p.is_active, p.created_at, 
+                'Sin categoría' AS category_name,
+                p.min_stock, p.expiry_date, p.wholesale_price, p.special_price
+         FROM products p WHERE p.is_active = true ORDER BY p.name ASC`;
 
     const result = await pool.query(sql);
     res.json({ success: true, data: result.rows });
@@ -48,7 +60,7 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
-// ✅ POST: Crear producto (con Zod + ocultar error)
+// ✅ POST: Crear producto (con Zod + nuevos campos)
 router.post(
   "/",
   verifyToken,
@@ -56,9 +68,19 @@ router.post(
   upload.single("image"),
   async (req, res) => {
     try {
-      // Validar entrada
       const parsed = createProductSchema.parse(req.body);
-      const { sku, name, cost_price, sale_price, stock, category_id } = parsed;
+      const {
+        sku,
+        name,
+        cost_price,
+        sale_price,
+        stock,
+        category_id,
+        min_stock,
+        expiry_date,
+        wholesale_price,
+        special_price,
+      } = parsed;
       const image_url = req.file ? "/uploads/" + req.file.filename : null;
       const userId = req.user?.id || req.user?.userId;
 
@@ -69,7 +91,8 @@ router.post(
 
       let sql, values;
       if (hasUserId) {
-        sql = `INSERT INTO products (sku, name, cost_price, sale_price, stock, category_id, image_url, user_id, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) RETURNING *`;
+        sql = `INSERT INTO products (sku, name, cost_price, sale_price, stock, category_id, image_url, user_id, is_active, min_stock, expiry_date, wholesale_price, special_price) 
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, $11, $12) RETURNING *`;
         values = [
           sku.trim(),
           name.trim(),
@@ -79,9 +102,14 @@ router.post(
           category_id || null,
           image_url,
           userId,
+          min_stock || 0,
+          expiry_date || null,
+          wholesale_price || 0,
+          special_price || 0,
         ];
       } else {
-        sql = `INSERT INTO products (sku, name, cost_price, sale_price, stock, category_id, image_url, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`;
+        sql = `INSERT INTO products (sku, name, cost_price, sale_price, stock, category_id, image_url, is_active, min_stock, expiry_date, wholesale_price, special_price) 
+               VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11) RETURNING *`;
         values = [
           sku.trim(),
           name.trim(),
@@ -90,6 +118,10 @@ router.post(
           parseInt(stock),
           category_id || null,
           image_url,
+          min_stock || 0,
+          expiry_date || null,
+          wholesale_price || 0,
+          special_price || 0,
         ];
       }
 
@@ -125,7 +157,7 @@ router.post(
   },
 );
 
-// ✅ PUT /:id/stock - Ajuste de stock CON TRANSACCIÓN
+// ✅ PUT /:id/stock - Ajuste de stock CON TRANSACCIÓN (sin cambios, solo se usa para movimientos)
 router.put(
   "/:id/stock",
   verifyToken,
@@ -209,7 +241,6 @@ router.put(
     } catch (err) {
       await client.query("ROLLBACK");
       console.error("Error en actualización de stock:", err);
-      // ✅ Ahora solo mensaje genérico
       res
         .status(500)
         .json({ success: false, message: "Error interno del servidor" });
@@ -219,7 +250,7 @@ router.put(
   },
 );
 
-// ✅ PUT: Actualizar producto completo (con Zod)
+// ✅ PUT: Actualizar producto completo (con Zod + nuevos campos)
 router.put(
   "/:id",
   verifyToken,
@@ -228,9 +259,19 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      // Validar entrada
       const parsed = updateProductSchema.parse(req.body);
-      const { sku, name, cost_price, sale_price, stock, category_id } = parsed;
+      const {
+        sku,
+        name,
+        cost_price,
+        sale_price,
+        stock,
+        category_id,
+        min_stock,
+        expiry_date,
+        wholesale_price,
+        special_price,
+      } = parsed;
 
       const updates = [];
       const values = [];
@@ -248,6 +289,13 @@ router.put(
       if (cost_price !== undefined) push("cost_price", parseFloat(cost_price));
       if (sale_price !== undefined) push("sale_price", parseFloat(sale_price));
       if (stock !== undefined && stock !== "") push("stock", parseInt(stock));
+      if (min_stock !== undefined && min_stock !== "")
+        push("min_stock", parseInt(min_stock));
+      if (expiry_date !== undefined) push("expiry_date", expiry_date || null);
+      if (wholesale_price !== undefined)
+        push("wholesale_price", parseFloat(wholesale_price));
+      if (special_price !== undefined)
+        push("special_price", parseFloat(special_price));
       if (category_id !== undefined) {
         if (category_id === "" || category_id === "null") {
           updates.push(`category_id = $${idx}`);
@@ -304,7 +352,7 @@ router.put(
   },
 );
 
-// ✅ DELETE: Desactivar producto
+// ✅ DELETE: Desactivar producto (sin cambios)
 router.delete("/:id", verifyToken, requireRole("admin"), async (req, res) => {
   try {
     const { id } = req.params;

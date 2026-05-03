@@ -24,10 +24,47 @@ const refundSchema = z.object({
   fe: z.string().max(50).optional(),
 });
 
-// GET /api/refunds
+const approveRefundSchema = z.object({});
+
+// Helper
+const getAuthUser = (req) => ({
+  id: req.user?.id || req.user?.sub || req.user?.userId,
+  role: (req.user?.role || req.user?.rol || "").trim().toLowerCase(),
+});
+
+// GET /api/refunds/pending – devoluciones pendientes de aprobación
+router.get("/pending", verifyToken, async (req, res) => {
+  try {
+    const user = getAuthUser(req);
+    if (user.role !== "admin" && user.role !== "warehouse") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+    const result = await pool.query(
+      `SELECT r.id, r.sale_id, r.reason, r.total_refunded, r.status, r.created_at,
+              u.name as cashier_name, s.total as original_total,
+              COUNT(ri.id) as items_count
+       FROM refunds r
+       JOIN users u ON r.user_id = u.id
+       JOIN sales s ON r.sale_id = s.id
+       LEFT JOIN refund_items ri ON r.id = ri.refund_id
+       WHERE r.status = 'pending'
+       GROUP BY r.id, u.name, s.total
+       ORDER BY r.created_at ASC`,
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error("Error pending refunds:", err);
+    res.status(500).json({ success: false, message: "Error interno" });
+  }
+});
+
+// GET /api/refunds – listar todas (admin)
 router.get("/", verifyToken, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    const user = getAuthUser(req);
+    if (user.role !== "admin") {
       return res
         .status(403)
         .json({ success: false, message: "Acceso denegado" });
@@ -51,7 +88,7 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
-// GET /api/refunds/:id
+// GET /api/refunds/:id – detalle de una devolución
 router.get("/:id", verifyToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -74,7 +111,7 @@ router.get("/:id", verifyToken, async (req, res) => {
   }
 });
 
-// POST /api/refunds - crear devolución (con nota de crédito)
+// POST /api/refunds - Crear devolución (PENDIENTE para cajero/warehouse, COMPLETADA solo admin)
 router.post("/", verifyToken, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -89,25 +126,27 @@ router.post("/", verifyToken, async (req, res) => {
       fe,
     } = parsed;
     const userId = req.user?.id || req.user?.userId;
+    const userRole = req.user?.role || "";
 
     await client.query("BEGIN");
 
-    // Verificar que la venta existe y está completada
+    // Solo permitir devolver ventas completadas
     const saleRes = await client.query(
-      "SELECT id, total, payment_method, cash_session_id FROM sales WHERE id = $1::uuid AND status = 'completed'",
+      "SELECT id, total, payment_method, cash_session_id, status FROM sales WHERE id = $1::uuid AND status = 'completed'",
       [sale_id],
     );
     if (saleRes.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({
         success: false,
-        message: "Venta no encontrada o ya fue reembolsada",
+        message: "Venta no encontrada o no puede ser devuelta",
       });
     }
 
     let totalRefunded = 0;
     const refundItemsData = [];
 
+    // Validar items y calcular total
     for (const item of items) {
       const saleItem = await client.query(
         `SELECT si.quantity, si.unit_price, si.subtotal 
@@ -143,17 +182,21 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    // Insertar refund con los nuevos campos
+    // Estado: completado solo para admin, el resto pendiente
+    const status = userRole === "admin" ? "completed" : "pending";
+
+    // Insertar refund
     const refundRes = await client.query(
       `INSERT INTO refunds (sale_id, cash_session_id, user_id, reason, total_refunded, status,
                             credit_note_number, customer_name, cf, fe)
-       VALUES ($1::uuid, $2::integer, $3::uuid, $4, $5, 'completed', $6, $7, $8, $9) RETURNING id`,
+       VALUES ($1::uuid, $2::integer, $3::uuid, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
       [
         sale_id,
         saleRes.rows[0].cash_session_id || null,
         userId,
         reason,
         totalRefunded,
+        status,
         credit_note_number || null,
         customer_name || null,
         cf || false,
@@ -162,7 +205,7 @@ router.post("/", verifyToken, async (req, res) => {
     );
     const refundId = refundRes.rows[0].id;
 
-    // Insertar items y actualizar stock
+    // Insertar items
     for (const item of refundItemsData) {
       await client.query(
         `INSERT INTO refund_items (refund_id, product_id, quantity, unit_price, subtotal)
@@ -175,31 +218,37 @@ router.post("/", verifyToken, async (req, res) => {
           item.subtotal,
         ],
       );
+    }
+
+    // Si fue creada por admin, se procesa directamente (stock y estado de venta)
+    if (status === "completed") {
+      for (const item of refundItemsData) {
+        await client.query(
+          "UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2::uuid",
+          [item.quantity, item.product_id],
+        );
+        await client.query(
+          `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by)
+           VALUES ($1::uuid, $2, 'increase', $3, $4::uuid)`,
+          [
+            item.product_id,
+            item.quantity,
+            `Devolución venta #${refundId.slice(0, 8)}`,
+            userId,
+          ],
+        );
+      }
+      // Marcar venta como refunded
       await client.query(
-        "UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2::uuid",
-        [item.quantity, item.product_id],
-      );
-      await client.query(
-        `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by)
-         VALUES ($1::uuid, $2, 'increase', $3, $4::uuid)`,
-        [
-          item.product_id,
-          item.quantity,
-          `Devolución venta #${refundId.slice(0, 8)}`,
-          userId,
-        ],
+        "UPDATE sales SET status = 'refunded' WHERE id = $1::uuid",
+        [sale_id],
       );
     }
 
-    // Cambiar estado de la venta a 'refunded'
-    await client.query(
-      "UPDATE sales SET status = 'refunded' WHERE id = $1::uuid",
-      [sale_id],
-    );
-
     await client.query("COMMIT");
 
-    await logAction("REFUND_CREATED", userId, req, {
+    const event = status === "completed" ? "REFUND_CREATED" : "REFUND_PENDING";
+    await logAction(event, userId, req, {
       refundId,
       saleId: sale_id,
       totalRefunded,
@@ -209,10 +258,11 @@ router.post("/", verifyToken, async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: credit_note_number
-        ? "Nota de crédito registrada"
-        : "Devolución procesada",
-      data: { refundId, totalRefunded, itemsCount: items.length },
+      message:
+        status === "completed"
+          ? "Devolución procesada"
+          : "Solicitud de devolución creada y pendiente de aprobación",
+      data: { refundId, totalRefunded, itemsCount: items.length, status },
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -224,6 +274,87 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
     console.error("Error creando devolución:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
+// PUT /api/refunds/:id/approve - Aprobar devolución pendiente (warehouse/admin)
+router.put("/:id/approve", verifyToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const user = getAuthUser(req);
+    if (user.role !== "admin" && user.role !== "warehouse") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Acceso denegado" });
+    }
+
+    const { id } = req.params;
+
+    const refundRes = await client.query(
+      "SELECT * FROM refunds WHERE id = $1::uuid AND status = 'pending' FOR UPDATE",
+      [id],
+    );
+    if (refundRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "Devolución pendiente no encontrada",
+        });
+    }
+
+    // Obtener items de la devolución
+    const itemsRes = await client.query(
+      "SELECT ri.product_id, ri.quantity FROM refund_items ri WHERE ri.refund_id = $1::uuid",
+      [id],
+    );
+
+    for (const item of itemsRes.rows) {
+      // Devolver stock
+      await client.query(
+        "UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2::uuid",
+        [item.quantity, item.product_id],
+      );
+      // Registrar movimiento
+      await client.query(
+        `INSERT INTO stock_movements (product_id, quantity, movement_type, reason, created_by)
+         VALUES ($1::uuid, $2, 'increase', $3, $4::uuid)`,
+        [
+          item.product_id,
+          item.quantity,
+          `Devolución aprobada #${id.slice(0, 8)}`,
+          user.id,
+        ],
+      );
+    }
+
+    // Marcar la venta original como refunded
+    const saleId = refundRes.rows[0].sale_id;
+    await client.query(
+      "UPDATE sales SET status = 'refunded' WHERE id = $1::uuid AND status = 'completed'",
+      [saleId],
+    );
+
+    // Marcar la devolución como completada
+    await client.query(
+      "UPDATE refunds SET status = 'completed' WHERE id = $1::uuid",
+      [id],
+    );
+
+    await client.query("COMMIT");
+
+    await logAction("REFUND_APPROVED", user.id, req, { refundId: id, saleId });
+
+    res.json({ success: true, message: "Devolución aprobada" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Error al aprobar devolución:", err);
     res
       .status(500)
       .json({ success: false, message: "Error interno del servidor" });
